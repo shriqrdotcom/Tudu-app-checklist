@@ -1,40 +1,49 @@
 import React from 'react';
-import { KeyRound, Mail, AlertCircle, Database, MailCheck } from 'lucide-react';
+import { KeyRound, Mail, AlertCircle, Database, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { UserProfile } from '../types';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAuthSuccess: (user: UserProfile) => void;
+  onAuthSuccess: () => void;
 }
 
-function friendlyAuthError(err: any): string {
-  const message: string = err?.message || 'Authentication failed. Please try again.';
-  if (/invalid login credentials/i.test(message)) return 'Incorrect email or password.';
-  if (/user already registered/i.test(message)) return 'An account with this email already exists. Try signing in.';
-  if (/password should be at least/i.test(message)) return 'Password must be at least 6 characters.';
-  if (/rate limit/i.test(message)) return 'Too many attempts. Please wait a moment and try again.';
-  return message;
-}
-
+/** Private single-owner app: sign-in only. There is no public registration. */
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuccess }) => {
-  const [mode, setMode] = React.useState<'login' | 'signup'>('login');
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
-  const [name, setName] = React.useState('');
+  const [showPassword, setShowPassword] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState('');
-  const [confirmationSent, setConfirmationSent] = React.useState(false);
 
   const isLiveSupabase = isSupabaseConfigured();
 
-  const resetForm = () => {
-    setErrorMsg('');
-    setConfirmationSent(false);
+  const friendlyAuthError = (err: any): string => {
+    const code = err?.code || '';
+    const message: string = err?.message || '';
+
+    if (code === 'user_banned' || /disabled|banned/i.test(message)) {
+      return 'This account is not available.';
+    }
+    if (/email not confirmed/i.test(message)) {
+      return 'This account is not available.';
+    }
+    if (/invalid login credentials|invalid credentials|user not found/i.test(message)) {
+      return 'Incorrect email or password.';
+    }
+    if (
+      /failed to fetch|networkerror|network error|load failed/i.test(message) ||
+      code === 'fetch_error'
+    ) {
+      return 'Unable to connect. Please try again.';
+    }
+    if (/rate limit/i.test(message)) {
+      return 'Too many attempts. Please wait a moment and try again.';
+    }
+    return 'Unable to sign in. Please try again.';
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -44,47 +53,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
 
     try {
       setIsLoading(true);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
 
-      if (mode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: { name: name || email.split('@')[0] },
-            emailRedirectTo: window.location.origin,
-          },
-        });
-        if (error) throw error;
-
-        if (data.session && data.user) {
-          onAuthSuccess({
-            id: data.user.id,
-            user_id: data.user.id,
-            email: data.user.email,
-            name: name || email.split('@')[0],
-            created_at: data.user.created_at ?? new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
-          onClose();
-        } else {
-          // Email confirmation required — no session yet
-          setConfirmationSent(true);
-        }
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        if (data.user) {
-          onAuthSuccess({
-            id: data.user.id,
-            user_id: data.user.id,
-            email: data.user.email,
-            name: data.user.user_metadata?.name || email.split('@')[0],
-            created_at: data.user.created_at ?? new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
-          onClose();
-        }
-      }
+      // onAuthStateChange in App loads the session + data automatically
+      onAuthSuccess();
+      onClose();
     } catch (err: any) {
       setErrorMsg(friendlyAuthError(err));
     } finally {
@@ -93,19 +67,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
   };
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={() => {
-        resetForm();
-        onClose();
-      }}
-      title={mode === 'login' ? 'Sign In to TU DU' : 'Create TU DU Account'}
-      maxWidth="sm"
-    >
+    <Modal isOpen={isOpen} onClose={onClose} title="TU DU ★" maxWidth="sm">
       {!isLiveSupabase ? (
         <div className="space-y-4">
           <div className="p-4 bg-orange-500/10 border border-orange-500/30 rounded-2xl flex items-start gap-3">
-            <Database className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+            <Database className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" aria-hidden="true" />
             <div>
               <p className="text-sm font-bold text-orange-600 dark:text-orange-400">
                 Supabase is not connected
@@ -122,82 +88,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
             Close
           </Button>
         </div>
-      ) : confirmationSent ? (
-        <div className="space-y-4">
-          <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-start gap-3">
-            <MailCheck className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
-                Confirm your email
-              </p>
-              <p className="text-xs text-slate-600 dark:text-zinc-400 mt-1 leading-relaxed">
-                We sent a confirmation link to <strong>{email}</strong>. Click it to activate your
-                account, then sign in.
-              </p>
-            </div>
-          </div>
-          <Button
-            variant="primary"
-            fullWidth
-            onClick={() => {
-              setMode('login');
-              setConfirmationSent(false);
-            }}
-          >
-            Back to Sign In
-          </Button>
-        </div>
       ) : (
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Toggle Mode */}
-          <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-xl mb-4">
-            <button
-              type="button"
-              onClick={() => {
-                setMode('login');
-                setErrorMsg('');
-              }}
-              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                mode === 'login'
-                  ? 'bg-white dark:bg-zinc-900 text-orange-600 dark:text-orange-400 shadow-xs'
-                  : 'text-slate-500 dark:text-zinc-400'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode('signup');
-                setErrorMsg('');
-              }}
-              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                mode === 'signup'
-                  ? 'bg-white dark:bg-zinc-900 text-orange-600 dark:text-orange-400 shadow-xs'
-                  : 'text-slate-500 dark:text-zinc-400'
-              }`}
-            >
-              Sign Up
-            </button>
+        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          {/* Heading */}
+          <div className="pb-1">
+            <h2 className="text-lg font-black text-slate-900 dark:text-white">Welcome back</h2>
+            <p className="text-xs text-slate-500 dark:text-zinc-400 mt-0.5">
+              Sign in to continue to your progress.
+            </p>
           </div>
 
           {errorMsg && (
-            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
+            <div
+              role="alert"
+              className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-600 dark:text-red-400 text-xs flex items-center gap-2"
+            >
+              <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span>{errorMsg}</span>
             </div>
-          )}
-
-          {mode === 'signup' && (
-          <Input
-            label="Full Name"
-            type="text"
-            required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            autoComplete="name"
-          />
           )}
 
           <Input
@@ -206,29 +114,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="alex@tudu.app"
+            placeholder="owner@example.com"
             autoComplete="email"
-            icon={<Mail className="w-4 h-4" />}
+            autoFocus
+            icon={<Mail className="w-4 h-4" aria-hidden="true" />}
           />
 
-          <Input
-            label="Password"
-            type="password"
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-            icon={<KeyRound className="w-4 h-4" />}
-          />
+          {/* Password with show/hide toggle */}
+          <div className="relative">
+            <Input
+              label="Password"
+              type={showPassword ? 'text' : 'password'}
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••••••"
+              autoComplete="current-password"
+              icon={<KeyRound className="w-4 h-4" aria-hidden="true" />}
+              className="pr-16"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              className="absolute right-3 bottom-2 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+            >
+              {showPassword ? (
+                <EyeOff className="w-4 h-4" aria-hidden="true" />
+              ) : (
+                <Eye className="w-4 h-4" aria-hidden="true" />
+              )}
+            </button>
+          </div>
 
-          <Button type="submit" fullWidth isLoading={isLoading} className="mt-2">
-            {isLoading ? 'Processing...' : mode === 'login' ? 'Sign In' : 'Create Account'}
+          <Button type="submit" fullWidth isLoading={isLoading} className="mt-1">
+            {isLoading ? 'Signing in...' : 'Sign In'}
           </Button>
 
-          <p className="text-[11px] text-center text-slate-400 dark:text-zinc-500 mt-2">
-            Secured by Supabase Auth. Your data is protected by Row Level Security.
+          <p className="text-[11px] text-center text-slate-400 dark:text-zinc-500 pt-1 flex items-center justify-center gap-1">
+            <ShieldCheck className="w-3 h-3" aria-hidden="true" />
+            Your data is protected by Supabase Row Level Security.
           </p>
         </form>
       )}

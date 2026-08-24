@@ -152,8 +152,8 @@ export default function App() {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
 
-  const handleAuthSuccess = (u: UserProfile) => {
-    addToast('success', `Welcome, ${u.name}!`);
+  const handleAuthSuccess = () => {
+    addToast('success', 'Welcome back!');
     // onAuthStateChange triggers loadData automatically
   };
 
@@ -427,7 +427,7 @@ export default function App() {
               </p>
             </div>
             <Button fullWidth size="lg" onClick={() => setIsAuthOpen(true)}>
-              Sign In / Get Started
+              Sign In
             </Button>
           </div>
         </main>
