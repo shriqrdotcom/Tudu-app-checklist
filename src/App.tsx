@@ -89,8 +89,15 @@ export default function App() {
     themeRef.current = theme;
   }, [theme]);
 
-  // Load User & App Data
+  // Tracks the newest loadData invocation for the race guard
+  const loadRequestIdRef = React.useRef(0);
+
+  // Load User & App Data — only the newest call may apply state (race guard:
+  // a slow stale response must never overwrite a fresher auth result).
   const loadData = useCallback(async () => {
+    const requestId = ++loadRequestIdRef.current;
+    const isStale = () => requestId !== loadRequestIdRef.current;
+
     if (!isSupabaseConfigured() || !supabase) {
       setUser(null);
       setIsLoading(false);
@@ -101,6 +108,7 @@ export default function App() {
       setIsLoading(true);
       setLoadError(null);
       const currentUser = await DataService.getCurrentUser();
+      if (isStale()) return;
       setUser(currentUser);
 
       if (currentUser) {
@@ -108,13 +116,14 @@ export default function App() {
           DataService.getProjects(currentUser.user_id),
           DataService.getTasks(currentUser.user_id),
         ]);
+        if (isStale()) return;
         setProjects(fetchedProjects);
         setTasks(fetchedTasks);
 
         // Adopt the server-side theme preference when available
         try {
           const remoteTheme = await DataService.getUserTheme(currentUser.user_id);
-          if (remoteTheme && remoteTheme !== themeRef.current) {
+          if (!isStale() && remoteTheme && remoteTheme !== themeRef.current) {
             themeRef.current = remoteTheme;
             setTheme(remoteTheme);
           }
@@ -126,12 +135,13 @@ export default function App() {
         setTasks([]);
         setSelectedProject(null);
       }
-    } catch (err: any) {
-      console.error('Error loading TU DU data:', err);
-      // Never surface raw database errors
+    } catch {
+      // Data fetch failed (e.g., schema not provisioned yet) — the session
+      // itself stays valid; the dashboard shows a retryable error state.
+      if (isStale()) return;
       setLoadError('Unable to load your progress. Please try again.');
     } finally {
-      setIsLoading(false);
+      if (!isStale()) setIsLoading(false);
     }
   }, []);
 

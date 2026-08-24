@@ -67,27 +67,46 @@ export class DataService {
     if (error) throw error;
     if (!user) return null;
 
-    // Ensure a profiles row exists (trigger normally handles this)
-    const { data: profile } = await client
-      .from('profiles')
-      .select('*')
-      .eq('user_id', user.id)
-      .maybeSingle();
+    // A valid session IS an authenticated user — never fail login just
+    // because the profiles table is missing or not provisioned yet.
+    const fallbackProfile: UserProfile = {
+      id: user.id,
+      user_id: user.id,
+      email: user.email ?? undefined,
+      name:
+        (user.user_metadata?.name as string) ||
+        user.email?.split('@')[0] ||
+        'TU DU User',
+      avatar_url: (user.user_metadata?.avatar_url as string) || undefined,
+      created_at: user.created_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
 
-    if (profile) {
-      return { ...profile, email: user.email ?? undefined };
+    try {
+      const { data: profile, error: profileError } = await client
+        .from('profiles')
+        .select('*')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (profileError) {
+        console.warn('[TU DU] profiles table unavailable — using auth metadata for this session.');
+        return fallbackProfile;
+      }
+      if (profile) return { ...profile, email: user.email ?? undefined };
+
+      // No row yet — create one (the DB trigger normally handles this)
+      const { data: created, error: insertError } = await client
+        .from('profiles')
+        .insert({ user_id: user.id, name: fallbackProfile.name })
+        .select()
+        .single();
+      if (insertError) return fallbackProfile;
+      return { ...created, email: user.email ?? undefined };
+    } catch {
+      console.warn('[TU DU] profiles lookup failed — using auth metadata for this session.');
+      return fallbackProfile;
     }
-
-    const seedName =
-      (user.user_metadata?.name as string) || user.email?.split('@')[0] || 'Member';
-    const { data: created, error: insertError } = await client
-      .from('profiles')
-      .insert({ user_id: user.id, name: seedName })
-      .select()
-      .single();
-
-    if (insertError) throw insertError;
-    return created ? { ...created, email: user.email ?? undefined } : null;
   }
 
   static async updateProfile(
