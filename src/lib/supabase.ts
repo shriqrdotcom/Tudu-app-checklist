@@ -20,6 +20,15 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured()
     })
   : null;
 
+// Production-only diagnostic (never prints values) — makes a misconfigured
+// deployment obvious in the browser console instead of failing silently.
+if (import.meta.env.PROD && !isSupabaseConfigured()) {
+  console.warn(
+    '[TU DU] Supabase env missing in this deployment. ' +
+      'Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel → Settings → Environment Variables (Production + Preview), then redeploy.'
+  );
+}
+
 function requireClient(): SupabaseClient {
   if (!supabase) {
     throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
