@@ -1,0 +1,6 @@
+{
+  "name": "TU DU",
+  "description": "Modern Progress Tracker and To-Do application with project progress visualizers, checklists, Supabase integration, and glassmorphism navigation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
