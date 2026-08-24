@@ -36,6 +36,7 @@ export interface ProgressTask {
   description?: string;
   image_url?: string;
   is_completed: boolean;
+  is_favorite: boolean;
   position: number;
   created_at: string;
   updated_at: string;
@@ -50,7 +51,15 @@ export interface UserSettings {
   updated_at?: string;
 }
 
-export type ViewTab = 'dashboard' | 'create' | 'tasks' | 'favorites' | 'settings';
+export type ViewTab = 'dashboard' | 'create' | 'profile';
+
+export type SortOption =
+  | 'recent_updated'
+  | 'recent_created'
+  | 'name_asc'
+  | 'name_desc'
+  | 'completion_high'
+  | 'completion_low';
 
 export type FilterStatus = 'all' | 'in_progress' | 'completed' | 'favorites';
 

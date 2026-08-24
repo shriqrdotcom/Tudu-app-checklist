@@ -2,17 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
-    <meta name="description" content="An application built with Google AI Studio." />
-    <meta property="og:title" content="My Google AI Studio App" />
-    <meta property="og:description" content="An application built with Google AI Studio." />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>TU DU ★ — Progress Tracker</title>
+    <meta name="description" content="TU DU — a minimal progress tracker. Create progress, add tasks, complete tasks, track completion." />
+    <meta property="og:title" content="TU DU ★ — Progress Tracker" />
+    <meta property="og:description" content="Create Progress → Add Tasks → Complete Tasks → Track Completion." />
     <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#ff6b00" />
+    <script>
+      // Apply saved theme before first paint to avoid flash
+      try {
+        var t = localStorage.getItem('tudu_theme_v1');
+        if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        if (t === 'dark') document.documentElement.classList.add('dark');
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

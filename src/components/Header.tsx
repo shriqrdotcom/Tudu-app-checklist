@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, User, Database, CheckCircle2 } from 'lucide-react';
+import { User, Database, CheckCircle2, Search } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { ThemeMode, UserProfile } from '../types';
 import { isSupabaseConfigured } from '../lib/supabase';
@@ -9,7 +9,8 @@ interface HeaderProps {
   onToggleTheme: () => void;
   user: UserProfile | null;
   onOpenAuth: () => void;
-  onOpenSettings: () => void;
+  onOpenProfile: () => void;
+  onSearch?: () => void;
   contextTitle?: string;
   onBrandClick?: () => void;
 }
@@ -19,7 +20,8 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleTheme,
   user,
   onOpenAuth,
-  onOpenSettings,
+  onOpenProfile,
+  onSearch,
   contextTitle,
   onBrandClick,
 }) => {
@@ -57,11 +59,24 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-2.5">
+          {/* Search */}
+          {onSearch && (
+            <button
+              onClick={onSearch}
+              aria-label="Search progress"
+              title="Search progress"
+              id="header-search-btn"
+              className="p-2 rounded-full text-slate-500 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800 hover:text-slate-800 dark:hover:text-zinc-200 transition-colors cursor-pointer"
+            >
+              <Search className="w-[18px] h-[18px]" />
+            </button>
+          )}
+
           {/* Supabase Status Badge */}
           <button
-            onClick={onOpenSettings}
-            title={isSupabaseLive ? 'Connected to live Supabase Backend' : 'Running in Local Persistent Mode (Click to connect Supabase)'}
+            onClick={onOpenProfile}
+            title={isSupabaseLive ? 'Connected to live Supabase Backend' : 'Connect Supabase to go live'}
             id="supabase-status-badge"
             className={`hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border transition-all ${
               isSupabaseLive
@@ -70,7 +85,7 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             <Database className="w-3.5 h-3.5" />
-            <span>{isSupabaseLive ? 'Supabase Live' : 'Local + Supabase SQL'}</span>
+            <span>{isSupabaseLive ? 'Supabase Live' : 'Setup Required'}</span>
           </button>
 
           {/* Theme Toggle */}
@@ -78,8 +93,9 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* User Profile Avatar / Sign In */}
           <button
-            onClick={user ? onOpenSettings : onOpenAuth}
+            onClick={user ? onOpenProfile : onOpenAuth}
             id="user-profile-btn"
+            aria-label={user ? 'Open profile' : 'Sign in'}
             className="flex items-center gap-2 p-1 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500/40 cursor-pointer"
           >
             {user?.avatar_url ? (

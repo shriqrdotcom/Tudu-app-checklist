@@ -1,39 +1,66 @@
 import React from 'react';
-import { Upload, X, Image as ImageIcon, Sparkles, Check } from 'lucide-react';
-import { PRESET_PROJECT_IMAGES, compressAndUploadImage } from '../lib/storage';
+import { X, Image as ImageIcon, Sparkles, Check, AlertCircle } from 'lucide-react';
+import {
+  PRESET_PROJECT_IMAGES,
+  compressAndUploadImage,
+  IMAGE_VALIDATION_MESSAGE,
+  ImageValidationError,
+} from '../lib/storage';
+import type { StorageBucket } from '../lib/storage';
 
 interface ImageUploaderProps {
   value?: string;
   onChange: (url: string) => void;
-  bucket?: 'project-images' | 'task-images';
-  userId?: string;
+  bucket?: StorageBucket;
+  userId: string;
   label?: string;
 }
 
 export const ImageUploader: React.FC<ImageUploaderProps> = ({
   value,
   onChange,
-  bucket = 'project-images',
-  userId = 'demo-user-123',
+  bucket,
+  userId,
   label = 'Cover Image (Optional)',
 }) => {
+  const activeBucket: StorageBucket = bucket ?? 'project-images';
   const [isUploading, setIsUploading] = React.useState(false);
+  const [isDragging, setIsDragging] = React.useState(false);
+  const [errorMsg, setErrorMsg] = React.useState('');
   const [showPresets, setShowPresets] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const uploadFile = async (file: File) => {
+    setErrorMsg('');
+    try {
+      setIsUploading(true);
+      const url = await compressAndUploadImage(file, activeBucket, userId);
+      onChange(url);
+    } catch (err) {
+      console.error('Failed to upload image:', err);
+      setErrorMsg(
+        err instanceof ImageValidationError
+          ? err.message
+          : IMAGE_VALIDATION_MESSAGE
+      );
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    await uploadFile(file);
+    e.target.value = '';
+  };
 
-    try {
-      setIsUploading(true);
-      const url = await compressAndUploadImage(file, bucket as 'project-images' | 'task-images', userId);
-      onChange(url);
-    } catch (err) {
-      console.error('Failed to upload image:', err);
-    } finally {
-      setIsUploading(false);
-    }
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (isUploading) return;
+    const file = e.dataTransfer.files?.[0];
+    if (file) await uploadFile(file);
   };
 
   return (
@@ -42,14 +69,16 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
         <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300">
           {label}
         </label>
-        <button
-          type="button"
-          onClick={() => setShowPresets(!showPresets)}
-          className="text-xs text-orange-600 dark:text-orange-400 hover:underline flex items-center gap-1 font-medium cursor-pointer"
-        >
-          <Sparkles className="w-3 h-3" />
-          <span>{showPresets ? 'Hide presets' : 'Choose preset'}</span>
-        </button>
+        {activeBucket === 'project-images' && (
+          <button
+            type="button"
+            onClick={() => setShowPresets(!showPresets)}
+            className="text-xs text-orange-600 dark:text-orange-400 hover:underline flex items-center gap-1 font-medium cursor-pointer"
+          >
+            <Sparkles className="w-3 h-3" />
+            <span>{showPresets ? 'Hide presets' : 'Choose preset'}</span>
+          </button>
+        )}
       </div>
 
       {/* Preset Picker Tray */}
@@ -102,26 +131,52 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
       ) : (
         <div
           onClick={() => fileInputRef.current?.click()}
-          className="w-full h-28 border-2 border-dashed border-slate-300 dark:border-zinc-700 hover:border-orange-500 dark:hover:border-orange-500 rounded-xl flex flex-col items-center justify-center p-4 text-center cursor-pointer bg-slate-50/50 dark:bg-zinc-800/30 hover:bg-orange-500/5 transition-all"
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDrop}
+          className={`w-full h-28 border-2 border-dashed rounded-xl flex flex-col items-center justify-center p-4 text-center cursor-pointer transition-all ${
+            isDragging
+              ? 'border-orange-500 bg-orange-500/10'
+              : 'border-slate-300 dark:border-zinc-700 hover:border-orange-500 dark:hover:border-orange-500 bg-slate-50/50 dark:bg-zinc-800/30 hover:bg-orange-500/5'
+          }`}
         >
           {isUploading ? (
             <div className="flex items-center gap-2 text-xs font-semibold text-orange-600 dark:text-orange-400">
               <div className="w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
-              <span>Optimizing image...</span>
+              <span>Uploading image...</span>
             </div>
           ) : (
             <>
               <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center text-slate-600 dark:text-zinc-400 mb-2">
-                <Upload className="w-4 h-4" />
+                <ImageIcon className="w-4 h-4" />
               </div>
               <p className="text-xs font-medium text-slate-700 dark:text-zinc-300">
-                Click or drag image to upload
+                Click or drop image to upload
               </p>
               <p className="text-[10px] text-slate-400 dark:text-zinc-500 mt-0.5">
-                PNG, JPG, WebP up to 5MB
+                JPG, PNG, WebP up to 5MB
               </p>
             </>
           )}
+        </div>
+      )}
+
+      {/* Upload error state */}
+      {errorMsg && (
+        <div className="mt-2 flex items-center gap-1.5 text-[11px] font-semibold text-red-600 dark:text-red-400" role="alert">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          <span>{errorMsg}</span>
+          <button
+            type="button"
+            onClick={() => setErrorMsg('')}
+            aria-label="Dismiss error"
+            className="ml-auto p-0.5 hover:opacity-70 cursor-pointer"
+          >
+            <X className="w-3 h-3" />
+          </button>
         </div>
       )}
 

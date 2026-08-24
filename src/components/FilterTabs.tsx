@@ -19,8 +19,8 @@ export const FilterTabs: React.FC<FilterTabsProps> = ({
   counts,
 }) => {
   const tabs: { id: FilterStatus; label: string; countKey?: keyof typeof counts }[] = [
-    { id: 'all', label: 'All Projects', countKey: 'all' },
-    { id: 'in_progress', label: 'In Progress', countKey: 'in_progress' },
+    { id: 'all', label: 'All', countKey: 'all' },
+    { id: 'in_progress', label: 'Active', countKey: 'in_progress' },
     { id: 'completed', label: 'Completed', countKey: 'completed' },
     { id: 'favorites', label: '★ Favorites', countKey: 'favorites' },
   ];

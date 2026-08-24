@@ -1,5 +1,24 @@
 import { supabase, isSupabaseConfigured } from './supabase';
 
+export type StorageBucket = 'project-images' | 'task-images' | 'avatars';
+
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
+export const IMAGE_VALIDATION_MESSAGE =
+  'Please choose a supported image under the allowed file size.';
+
+/** Thrown when a file fails client-side validation before upload. */
+export class ImageValidationError extends Error {}
+
+export function validateImageFile(file: File): void {
+  if (!ALLOWED_IMAGE_TYPES.includes(file.type.toLowerCase())) {
+    throw new ImageValidationError(IMAGE_VALIDATION_MESSAGE);
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    throw new ImageValidationError(IMAGE_VALIDATION_MESSAGE);
+  }
+}
+
 // High quality curated presets for projects & tasks
 export const PRESET_PROJECT_IMAGES = [
   'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=800&q=80', // Web Dev
@@ -14,9 +33,12 @@ export const PRESET_PROJECT_IMAGES = [
 
 export async function compressAndUploadImage(
   file: File,
-  bucket: 'project-images' | 'task-images',
+  bucket: StorageBucket,
   userId: string
 ): Promise<string> {
+  // Validate before doing any work
+  validateImageFile(file);
+
   // Compress client side image to max 1024px width Base64 / Storage object
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -82,4 +104,28 @@ export async function compressAndUploadImage(
     };
     reader.onerror = (err) => reject(err);
   });
+}
+
+/** True when a URL points at this project's public Supabase Storage. */
+export function isSupabaseStorageUrl(url?: string | null): boolean {
+  return Boolean(url && supabase && url.includes('/storage/v1/object/public/'));
+}
+
+/**
+ * Best-effort deletion of a previously uploaded storage file, parsed from its
+ * public URL. Never throws — cleanup failures must not break the UX flow.
+ */
+export async function deleteStorageFileFromUrl(url: string): Promise<void> {
+  if (!supabase || !isSupabaseStorageUrl(url)) return;
+  try {
+    const marker = '/object/public/';
+    const rest = url.substring(url.indexOf(marker) + marker.length); // <bucket>/<path>
+    const slash = rest.indexOf('/');
+    if (slash <= 0) return;
+    const bucket = rest.slice(0, slash) as StorageBucket;
+    const path = rest.slice(slash + 1);
+    await supabase.storage.from(bucket).remove([path]);
+  } catch (err) {
+    console.warn('Failed to clean up old image:', err);
+  }
 }

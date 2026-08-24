@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Trash2, Edit2, Image as ImageIcon, Calendar } from 'lucide-react';
+import { Check, Trash2, Edit2, Image as ImageIcon, Star } from 'lucide-react';
 import { motion } from 'motion/react';
 import confetti from 'canvas-confetti';
 import { ProgressTask } from '../types';
@@ -9,6 +9,7 @@ interface TaskCardProps {
   projectName?: string;
   projectColor?: string;
   onToggleComplete: (taskId: string, isCompleted: boolean) => void;
+  onToggleFavorite?: (taskId: string, current: boolean) => void;
   onEdit?: (task: ProgressTask) => void;
   onDelete?: (taskId: string) => void;
 }
@@ -18,6 +19,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   projectName,
   projectColor = '#ff6b00',
   onToggleComplete,
+  onToggleFavorite,
   onEdit,
   onDelete,
 }) => {
@@ -50,18 +52,34 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 shadow-sm hover:border-orange-500/40 dark:hover:border-orange-500/40'
       }`}
     >
-      <div className="flex items-start gap-3.5 flex-1 min-w-0">
-        {/* Custom Checkbox */}
+      <div className="flex items-start gap-3 flex-1 min-w-0">
+        {/* Custom Checkbox (with comfortable touch padding) */}
         <button
           onClick={handleToggle}
           id={`task-check-${task.id}`}
-          className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center border transition-all cursor-pointer ${
-            task.is_completed
-              ? 'bg-orange-500 border-orange-500 text-white shadow-sm'
-              : 'border-slate-300 dark:border-zinc-600 hover:border-orange-500 bg-white dark:bg-zinc-800'
-          }`}
+          role="checkbox"
+          aria-checked={task.is_completed}
+          aria-label={task.is_completed ? `Mark "${task.title}" incomplete` : `Mark "${task.title}" complete`}
+          className="mt-0.5 -m-1 p-1 rounded-lg shrink-0 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500/60"
         >
-          {task.is_completed && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+          <motion.span
+            whileTap={{ scale: 0.85 }}
+            className={`w-5 h-5 rounded-md flex items-center justify-center border transition-all duration-200 ${
+              task.is_completed
+                ? 'bg-orange-500 border-orange-500 text-white shadow-sm'
+                : 'border-slate-300 dark:border-zinc-600 hover:border-orange-500 bg-white dark:bg-zinc-800'
+            }`}
+          >
+            {task.is_completed && (
+              <motion.span
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 22 }}
+              >
+                <Check className="w-3.5 h-3.5 stroke-[3]" />
+              </motion.span>
+            )}
+          </motion.span>
         </button>
 
         {/* Details */}
@@ -119,12 +137,32 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       </div>
 
       {/* Task Actions */}
-      <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+      <div className="flex items-center gap-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
+        {onToggleFavorite && (
+          <button
+            onClick={() => onToggleFavorite(task.id, task.is_favorite)}
+            id={`task-fav-${task.id}`}
+            aria-label={task.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
+            aria-pressed={task.is_favorite}
+            title="Favorite"
+            className="p-2 rounded-lg transition-colors cursor-pointer active:scale-90 hover:bg-slate-100 dark:hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500/60"
+          >
+            <Star
+              className={`w-4 h-4 ${
+                task.is_favorite
+                  ? 'fill-amber-400 text-amber-400'
+                  : 'text-slate-300 dark:text-zinc-600'
+              }`}
+            />
+          </button>
+        )}
+
         {onEdit && (
           <button
             onClick={() => onEdit(task)}
             title="Edit task"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+            aria-label={`Edit "${task.title}"`}
+            className="p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500/60"
           >
             <Edit2 className="w-3.5 h-3.5" />
           </button>
@@ -134,7 +172,8 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           <button
             onClick={() => onDelete(task.id)}
             title="Delete task"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+            aria-label={`Delete "${task.title}"`}
+            className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>

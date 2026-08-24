@@ -1,5 +1,5 @@
 import React from 'react';
-import { Star, CheckCircle2, Clock, ChevronRight, MoreVertical, Trash2, Edit3 } from 'lucide-react';
+import { Star, ChevronRight } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ProgressProject } from '../types';
 import { ProgressBar } from './ProgressBar';
@@ -8,171 +8,136 @@ interface ProgressCardProps {
   project: ProgressProject;
   onOpen: (project: ProgressProject) => void;
   onToggleFavorite: (projectId: string, current: boolean) => void;
-  onEdit?: (project: ProgressProject) => void;
-  onDelete?: (projectId: string) => void;
 }
 
+function formatRelativeTime(iso?: string): string {
+  if (!iso) return 'Recently';
+  const date = new Date(iso);
+  const diffMinutes = Math.round((date.getTime() - Date.now()) / (1000 * 60));
+  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+  if (Math.abs(diffMinutes) < 60) return rtf.format(diffMinutes, 'minute');
+  const diffHours = Math.round(diffMinutes / 60);
+  if (Math.abs(diffHours) < 24) return rtf.format(diffHours, 'hour');
+  const diffDays = Math.round(diffHours / 24);
+  if (Math.abs(diffDays) < 30) return rtf.format(diffDays, 'day');
+  return rtf.format(Math.round(diffDays / 30), 'month');
+}
+
+/**
+ * WhatsApp-inspired progress list row:
+ * image/avatar on the left, title + secondary info in the middle,
+ * completion status on the right. TU DU identity: white/black + orange.
+ */
 export const ProgressCard: React.FC<ProgressCardProps> = ({
   project,
   onOpen,
   onToggleFavorite,
-  onEdit,
-  onDelete,
 }) => {
-  const [showMenu, setShowMenu] = React.useState(false);
-
-  const formattedDate = React.useMemo(() => {
-    if (!project.updated_at) return 'Recently';
-    const date = new Date(project.updated_at);
-    return new Intl.RelativeTimeFormat('en', { numeric: 'auto' }).format(
-      Math.round((date.getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
-      'day'
-    );
-  }, [project.updated_at]);
+  const total = project.total_tasks ?? 0;
+  const completed = project.completed_tasks ?? 0;
+  const percentage = project.completion_percentage ?? 0;
+  const accent = project.accent_color || '#ff6b00';
+  const relativeTime = React.useMemo(() => formatRelativeTime(project.updated_at), [project.updated_at]);
 
   return (
     <motion.div
-      whileHover={{ y: -3 }}
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className="group relative flex flex-col justify-between bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm hover:shadow-lg dark:hover:shadow-orange-950/20 overflow-hidden transition-all duration-200"
+      whileTap={{ scale: 0.99 }}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open progress: ${project.title}. ${completed} of ${total} tasks completed, ${percentage} percent.`}
+      onClick={() => onOpen(project)}
+      onKeyDown={(e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen(project);
+        }
+      }}
+      className="group relative flex items-center gap-3 sm:gap-4 p-3 sm:p-3.5 bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm hover:shadow-md hover:border-slate-300 dark:hover:border-zinc-700 active:bg-slate-50 dark:active:bg-zinc-800/50 focus-visible:ring-2 focus-visible:ring-orange-500/60 focus-visible:border-orange-500 transition-all duration-200 cursor-pointer outline-none"
     >
-      {/* Top Banner Image or Accent Bar */}
+      {/* Avatar / Project image */}
       {project.image_url ? (
-        <div className="relative h-32 w-full overflow-hidden bg-slate-100 dark:bg-zinc-800">
-          <img
-            src={project.image_url}
-            alt={project.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
-
-          {/* Accent Badge Swatch */}
-          <div
-            className="absolute top-3 left-3 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-zinc-900 shadow-md"
-            style={{ backgroundColor: project.accent_color || '#ff6b00' }}
-          />
-
-          {/* Top Actions: Favorite & Menu */}
-          <div className="absolute top-3 right-3 flex items-center gap-1">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleFavorite(project.id, project.is_favorite);
-              }}
-              id={`fav-btn-${project.id}`}
-              className="p-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white backdrop-blur-md transition-colors cursor-pointer"
-            >
-              <Star
-                className={`w-4 h-4 ${
-                  project.is_favorite ? 'fill-amber-400 text-amber-400' : 'text-zinc-300'
-                }`}
-              />
-            </button>
-          </div>
-
-          <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between">
-            <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-orange-500/90 text-white backdrop-blur-sm">
-              {project.completed_tasks ?? 0} / {project.total_tasks ?? 0} Tasks
-            </span>
-          </div>
-        </div>
+        <img
+          src={project.image_url}
+          alt=""
+          aria-hidden="true"
+          className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl object-cover border border-slate-200 dark:border-zinc-800 shrink-0"
+          loading="lazy"
+        />
       ) : (
         <div
-          className="h-2 w-full"
-          style={{ backgroundColor: project.accent_color || '#ff6b00' }}
-        />
+          aria-hidden="true"
+          className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl flex items-center justify-center text-white font-black text-lg shrink-0"
+          style={{ backgroundColor: accent }}
+        >
+          {project.title.charAt(0).toUpperCase() || 'P'}
+        </div>
       )}
 
-      {/* Card Content */}
-      <div className="p-5 flex-1 flex flex-col justify-between">
-        <div>
-          {/* Header row for non-image projects */}
-          {!project.image_url && (
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <span
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: project.accent_color || '#ff6b00' }}
-                />
-                <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400">
-                  {project.completed_tasks ?? 0}/{project.total_tasks ?? 0} Tasks
-                </span>
-              </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFavorite(project.id, project.is_favorite);
-                }}
-                id={`fav-btn-noimg-${project.id}`}
-                className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-              >
-                <Star
-                  className={`w-4.5 h-4.5 ${
-                    project.is_favorite ? 'fill-amber-400 text-amber-400' : 'text-slate-400 dark:text-zinc-500'
-                  }`}
-                />
-              </button>
-            </div>
-          )}
-
-          {/* Title & Description */}
-          <h3 className="font-bold text-lg text-slate-900 dark:text-white group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors line-clamp-1">
+      {/* Title + secondary info */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <h3 className="font-bold text-sm sm:text-[15px] text-slate-900 dark:text-white truncate group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors">
             {project.title}
           </h3>
-          {project.description && (
-            <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1 line-clamp-2 leading-relaxed">
-              {project.description}
-            </p>
+          {project.is_favorite && (
+            <Star className="w-3 h-3 fill-amber-400 text-amber-400 shrink-0" aria-hidden="true" />
           )}
         </div>
 
-        {/* Progress Gauge */}
-        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-zinc-800/80">
-          <ProgressBar
-            percentage={project.completion_percentage ?? 0}
-            color={project.accent_color || '#ff6b00'}
-            size="md"
-          />
+        {project.description && (
+          <p className="text-xs text-slate-500 dark:text-zinc-400 line-clamp-1 mt-0.5">
+            {project.description}
+          </p>
+        )}
 
-          {/* Bottom Footer Details */}
-          <div className="flex items-center justify-between mt-4 text-xs text-slate-400 dark:text-zinc-500">
-            <div className="flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5 text-slate-400 dark:text-zinc-500" />
-              <span>{formattedDate}</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {onEdit && (
-                <button
-                  onClick={() => onEdit(project)}
-                  title="Edit Project"
-                  className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 transition-colors cursor-pointer"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              {onDelete && (
-                <button
-                  onClick={() => onDelete(project.id)}
-                  title="Delete Project"
-                  className="p-1.5 text-slate-400 hover:text-red-500 transition-colors cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              <button
-                onClick={() => onOpen(project)}
-                id={`open-project-${project.id}`}
-                className="flex items-center gap-1 text-xs font-bold text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 group-hover:translate-x-0.5 transition-transform cursor-pointer pl-2"
-              >
-                <span>Open</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
+        <div className="flex items-center gap-2 mt-1.5">
+          {/* Compact progress bar */}
+          <div className="w-16 sm:w-24 shrink-0">
+            <ProgressBar percentage={percentage} color={accent} size="sm" showText={false} />
           </div>
+          <span className="text-[11px] font-semibold text-slate-500 dark:text-zinc-400 whitespace-nowrap">
+            {completed} / {total} completed
+          </span>
         </div>
+      </div>
+
+      {/* Right-side status */}
+      <div className="flex flex-col items-end justify-between self-stretch py-0.5 gap-1.5 shrink-0">
+        <span className="font-mono text-sm sm:text-base font-extrabold" style={{ color: accent }}>
+          {percentage}
+          <span className="text-[10px] align-top">%</span>
+        </span>
+
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite(project.id, project.is_favorite);
+            }}
+            id={`fav-btn-${project.id}`}
+            aria-label={project.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
+            title="Favorite"
+            className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer active:scale-90"
+          >
+            <Star
+              className={`w-4 h-4 transition-colors ${
+                project.is_favorite
+                  ? 'fill-amber-400 text-amber-400'
+                  : 'text-slate-300 dark:text-zinc-600'
+              }`}
+            />
+          </button>
+
+          <ChevronRight className="w-4 h-4 text-slate-300 dark:text-zinc-600 group-hover:text-orange-500 group-hover:translate-x-0.5 transition-all" />
+        </div>
+
+        <span className="text-[10px] text-slate-400 dark:text-zinc-500 hidden sm:block whitespace-nowrap">
+          {relativeTime}
+        </span>
       </div>
     </motion.div>
   );

@@ -1,75 +1,83 @@
 import React from 'react';
-import { FolderPlus, CheckSquare, Sparkles, Star, Palette } from 'lucide-react';
+import { FolderPlus, CheckSquare, Star, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ProgressProject, ProgressTask } from '../types';
 import { ImageUploader } from '../components/ImageUploader';
+import { ProjectSelect } from '../components/ProjectSelect';
+import { Button } from '../components/Button';
+import { Input } from '../components/Input';
+import { ACCENT_COLORS, DEFAULT_ACCENT } from '../lib/accentColors';
 
 interface CreateViewProps {
   projects: ProgressProject[];
+  userId: string;
   onCreateProject: (projectData: {
     title: string;
     description: string;
     image_url: string;
     accent_color: string;
     is_favorite: boolean;
-  }) => Promise<void>;
+  }) => Promise<ProgressProject>;
   onCreateTask: (taskData: {
     project_id: string;
     title: string;
     description: string;
     image_url: string;
-  }) => Promise<void>;
-  defaultProjectId?: string;
-  userId?: string;
-  onSuccess: () => void;
+    is_favorite: boolean;
+  }) => Promise<ProgressTask>;
 }
 
-const ACCENT_COLORS = [
-  { name: 'Orange', hex: '#ff6b00' },
-  { name: 'Blue', hex: '#3b82f6' },
-  { name: 'Emerald', hex: '#10b981' },
-  { name: 'Purple', hex: '#a855f7' },
-  { name: 'Pink', hex: '#ec4899' },
-  { name: 'Amber', hex: '#f59e0b' },
-  { name: 'Red', hex: '#ef4444' },
-];
+type CreateMode = 'project' | 'task';
 
 export const CreateView: React.FC<CreateViewProps> = ({
   projects,
+  userId,
   onCreateProject,
   onCreateTask,
-  defaultProjectId,
-  userId = 'demo-user-123',
-  onSuccess,
 }) => {
-  const [activeMode, setActiveMode] = React.useState<'project' | 'task'>('project');
+  const [activeMode, setActiveMode] = React.useState<CreateMode>('project');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   // Form State - Project
   const [projectTitle, setProjectTitle] = React.useState('');
   const [projectDesc, setProjectDesc] = React.useState('');
   const [projectImage, setProjectImage] = React.useState('');
-  const [accentColor, setAccentColor] = React.useState('#ff6b00');
+  const [accentColor, setAccentColor] = React.useState(DEFAULT_ACCENT);
   const [isFavorite, setIsFavorite] = React.useState(false);
+  const [projectError, setProjectError] = React.useState('');
 
   // Form State - Task
-  const [selectedProjectId, setSelectedProjectId] = React.useState(
-    defaultProjectId || (projects[0]?.id ?? '')
-  );
+  const [selectedProjectId, setSelectedProjectId] = React.useState('');
   const [taskTitle, setTaskTitle] = React.useState('');
   const [taskDesc, setTaskDesc] = React.useState('');
   const [taskImage, setTaskImage] = React.useState('');
+  const [isTaskFavorite, setIsTaskFavorite] = React.useState(false);
+  const [taskError, setTaskError] = React.useState('');
 
-  React.useEffect(() => {
-    if (defaultProjectId) {
-      setSelectedProjectId(defaultProjectId);
-      setActiveMode('task');
-    }
-  }, [defaultProjectId]);
+  const resetProjectForm = () => {
+    setProjectTitle('');
+    setProjectDesc('');
+    setProjectImage('');
+    setAccentColor(DEFAULT_ACCENT);
+    setIsFavorite(false);
+    setProjectError('');
+  };
+
+  const resetTaskForm = () => {
+    setSelectedProjectId('');
+    setTaskTitle('');
+    setTaskDesc('');
+    setTaskImage('');
+    setIsTaskFavorite(false);
+    setTaskError('');
+  };
 
   const handleSubmitProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!projectTitle.trim()) return;
+    if (!projectTitle.trim()) {
+      setProjectError('Please give your progress a name.');
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -80,9 +88,10 @@ export const CreateView: React.FC<CreateViewProps> = ({
         accent_color: accentColor,
         is_favorite: isFavorite,
       });
-      onSuccess();
+      resetProjectForm();
     } catch (err) {
-      console.error('Failed to create project:', err);
+      console.error('Failed to create progress:', err);
+      setProjectError('Something went wrong. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -90,7 +99,14 @@ export const CreateView: React.FC<CreateViewProps> = ({
 
   const handleSubmitTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!taskTitle.trim() || !selectedProjectId) return;
+    if (!selectedProjectId) {
+      setTaskError('Choose which progress this task belongs to.');
+      return;
+    }
+    if (!taskTitle.trim()) {
+      setTaskError('Please give the task a title.');
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -99,43 +115,89 @@ export const CreateView: React.FC<CreateViewProps> = ({
         title: taskTitle.trim(),
         description: taskDesc.trim(),
         image_url: taskImage,
+        is_favorite: isTaskFavorite,
       });
-      onSuccess();
+      resetTaskForm();
     } catch (err) {
-      console.error('Failed to create task:', err);
+      console.error('Failed to add task:', err);
+      setTaskError('Something went wrong. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6 pb-24">
-      {/* Header Tabs: Project vs Task */}
-      <div className="flex bg-slate-100 dark:bg-zinc-800/80 p-1.5 rounded-2xl border border-slate-200 dark:border-zinc-700/80">
+    <div className="max-w-2xl mx-auto space-y-5 pb-28">
+      {/* Page Heading */}
+      <div>
+        <h1 className="text-xl font-black tracking-tight text-slate-900 dark:text-white">
+          Create Something
+        </h1>
+        <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
+          Start a new progress or extend an existing checklist.
+        </p>
+      </div>
+
+      {/* Two distinct entry actions */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <button
+          type="button"
           onClick={() => setActiveMode('project')}
           id="tab-create-project"
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+          aria-pressed={activeMode === 'project'}
+          className={`flex items-center gap-3 p-4 rounded-2xl border text-left transition-all cursor-pointer active:scale-[0.98] ${
             activeMode === 'project'
-              ? 'bg-white dark:bg-zinc-900 text-orange-600 dark:text-orange-400 shadow-sm border border-slate-200/80 dark:border-zinc-700'
-              : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200'
+              ? 'bg-orange-500/10 dark:bg-orange-500/15 border-orange-500/50 shadow-md shadow-orange-500/10'
+              : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 hover:border-orange-500/40 shadow-sm'
           }`}
         >
-          <FolderPlus className="w-4 h-4" />
-          <span>New Progress Project</span>
+          <span
+            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+              activeMode === 'project'
+                ? 'bg-gradient-to-tr from-orange-600 to-amber-500 text-white orange-glow-sm'
+                : 'bg-slate-100 dark:bg-zinc-800 text-orange-500'
+            }`}
+          >
+            <FolderPlus className="w-5 h-5" />
+          </span>
+          <span>
+            <span className="block text-sm font-extrabold text-slate-900 dark:text-white">
+              + Create Progress
+            </span>
+            <span className="block text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              A new project to track completion.
+            </span>
+          </span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveMode('task')}
           id="tab-create-task"
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+          aria-pressed={activeMode === 'task'}
+          className={`flex items-center gap-3 p-4 rounded-2xl border text-left transition-all cursor-pointer active:scale-[0.98] ${
             activeMode === 'task'
-              ? 'bg-white dark:bg-zinc-900 text-orange-600 dark:text-orange-400 shadow-sm border border-slate-200/80 dark:border-zinc-700'
-              : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200'
+              ? 'bg-orange-500/10 dark:bg-orange-500/15 border-orange-500/50 shadow-md shadow-orange-500/10'
+              : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 hover:border-orange-500/40 shadow-sm'
           }`}
         >
-          <CheckSquare className="w-4 h-4" />
-          <span>New Task Item</span>
+          <span
+            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+              activeMode === 'task'
+                ? 'bg-gradient-to-tr from-orange-600 to-amber-500 text-white orange-glow-sm'
+                : 'bg-slate-100 dark:bg-zinc-800 text-emerald-500'
+            }`}
+          >
+            <CheckSquare className="w-5 h-5" />
+          </span>
+          <span>
+            <span className="block text-sm font-extrabold text-slate-900 dark:text-white">
+              + Add Task
+            </span>
+            <span className="block text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
+              A checklist item inside a progress.
+            </span>
+          </span>
         </button>
       </div>
 
@@ -145,54 +207,43 @@ export const CreateView: React.FC<CreateViewProps> = ({
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2 }}
-        className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-zinc-800 shadow-xl"
+        className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-zinc-800 shadow-lg"
       >
         {activeMode === 'project' ? (
-          <form onSubmit={handleSubmitProject} className="space-y-5">
-            <div>
-              <h2 className="text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-                <FolderPlus className="w-5 h-5 text-orange-500" />
-                <span>Create Progress Project</span>
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
-                A project acts as a container for checklist tasks and tracks completion progress.
-              </p>
-            </div>
-
+          <form onSubmit={handleSubmitProject} className="space-y-5" noValidate>
             {/* Title */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                Project Title <span className="text-orange-500">*</span>
-              </label>
-              <input
-                type="text"
-                required
-                value={projectTitle}
-                onChange={(e) => setProjectTitle(e.target.value)}
-                placeholder="e.g. Website Development, Marketing Campaign..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-              />
-            </div>
+            <Input
+              label="Progress Name"
+              type="text"
+              value={projectTitle}
+              onChange={(e) => {
+                setProjectTitle(e.target.value);
+                if (e.target.value.trim()) setProjectError('');
+              }}
+              placeholder="e.g. Restaurant Dashboard"
+              maxLength={80}
+              autoComplete="off"
+            />
 
             {/* Description */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                Description (Optional)
+                Description <span className="text-slate-400 font-normal">(Optional)</span>
               </label>
               <textarea
                 rows={3}
                 value={projectDesc}
                 onChange={(e) => setProjectDesc(e.target.value)}
-                placeholder="Brief summary of goals and deliverables..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
+                placeholder="What are you working toward?"
+                maxLength={300}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
               />
             </div>
 
             {/* Accent Color Picker */}
             <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-2 flex items-center gap-1.5">
-                <Palette className="w-3.5 h-3.5 text-orange-500" />
-                <span>Project Color Theme</span>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-2">
+                Accent Color <span className="text-slate-400 font-normal">(Optional)</span>
               </label>
               <div className="flex items-center gap-2 flex-wrap">
                 {ACCENT_COLORS.map((c) => (
@@ -200,13 +251,14 @@ export const CreateView: React.FC<CreateViewProps> = ({
                     key={c.hex}
                     type="button"
                     onClick={() => setAccentColor(c.hex)}
+                    aria-label={c.name}
+                    title={c.name}
                     className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition-transform cursor-pointer ${
                       accentColor === c.hex
                         ? 'border-slate-900 dark:border-white scale-110 shadow-md'
                         : 'border-transparent hover:scale-105'
                     }`}
                     style={{ backgroundColor: c.hex }}
-                    title={c.name}
                   />
                 ))}
               </div>
@@ -215,13 +267,16 @@ export const CreateView: React.FC<CreateViewProps> = ({
             {/* Image Uploader */}
             <ImageUploader
               value={projectImage}
-              onChange={setProjectImage}
+              onChange={(url) => {
+                setProjectImage(url);
+                setProjectError('');
+              }}
               bucket="project-images"
               userId={userId}
-              label="Project Header Banner / Image (Optional)"
+              label="Project Image (Optional)"
             />
 
-            {/* Favorite Checkbox */}
+            {/* Favorite Toggle */}
             <div className="flex items-center gap-2 pt-1">
               <button
                 type="button"
@@ -237,78 +292,85 @@ export const CreateView: React.FC<CreateViewProps> = ({
                     isFavorite ? 'fill-amber-400 text-amber-400' : 'text-slate-400'
                   }`}
                 />
-                <span>Add to Favorite Projects</span>
+                <span>Mark as Favorite</span>
               </button>
             </div>
 
-            {/* Submit Button */}
-            <button
+            {/* Validation */}
+            {projectError && (
+              <p
+                id="project-error"
+                role="alert"
+                className="flex items-center gap-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {projectError}
+              </p>
+            )}
+
+            {/* Submit */}
+            <Button
               type="submit"
-              disabled={isSubmitting || !projectTitle.trim()}
+              size="lg"
+              fullWidth
+              isLoading={isSubmitting}
               id="submit-project-btn"
-              className="w-full py-3 px-6 rounded-2xl bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white font-extrabold text-sm shadow-lg shadow-orange-500/30 disabled:opacity-50 transition-all cursor-pointer"
             >
-              {isSubmitting ? 'Creating Project...' : 'Create Progress Project'}
-            </button>
+              {isSubmitting ? 'Creating...' : 'Create Progress'}
+            </Button>
           </form>
-        ) : (
-          <form onSubmit={handleSubmitTask} className="space-y-5">
+        ) : projects.length === 0 ? (
+          /* No-progress empty state */
+          <div className="flex flex-col items-center justify-center py-10 text-center space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-orange-500/10 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 flex items-center justify-center orange-glow-sm">
+              <FolderPlus className="w-8 h-8 stroke-[1.8]" />
+            </div>
             <div>
-              <h2 className="text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-                <CheckSquare className="w-5 h-5 text-orange-500" />
-                <span>Add Checklist Task</span>
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
-                Assign a new task to a specific Progress Project.
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">No Progress yet</h3>
+              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1 max-w-xs leading-relaxed">
+                Create your first Progress before adding tasks.
               </p>
             </div>
-
-            {/* Select Target Project */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                Select Progress Project <span className="text-orange-500">*</span>
-              </label>
-              <select
-                required
-                value={selectedProjectId}
-                onChange={(e) => setSelectedProjectId(e.target.value)}
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-              >
-                {projects.length === 0 && <option value="">No projects available</option>}
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.title} ({p.total_tasks ?? 0} tasks)
-                  </option>
-                ))}
-              </select>
-            </div>
+            <Button onClick={() => setActiveMode('project')}>Create Progress</Button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmitTask} className="space-y-5" noValidate>
+            {/* Searchable project selector */}
+            <ProjectSelect
+              projects={projects}
+              value={selectedProjectId}
+              onChange={(id) => {
+                setSelectedProjectId(id);
+                setTaskError('');
+              }}
+            />
 
             {/* Task Title */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                Task Title <span className="text-orange-500">*</span>
-              </label>
-              <input
-                type="text"
-                required
-                value={taskTitle}
-                onChange={(e) => setTaskTitle(e.target.value)}
-                placeholder="e.g. Design hero section wireframes..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-              />
-            </div>
+            <Input
+              label="Task Title"
+              type="text"
+              value={taskTitle}
+              onChange={(e) => {
+                setTaskTitle(e.target.value);
+                if (e.target.value.trim()) setTaskError('');
+              }}
+              placeholder="e.g. Orders Page + Add Orders"
+              maxLength={140}
+              autoComplete="off"
+            />
 
-            {/* Task Description */}
+            {/* Description */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">
-                Task Notes / Details (Optional)
+                Description <span className="text-slate-400 font-normal">(Optional)</span>
               </label>
               <textarea
                 rows={3}
                 value={taskDesc}
                 onChange={(e) => setTaskDesc(e.target.value)}
-                placeholder="Add sub-notes or specifications..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
+                placeholder="Describe what needs to be completed..."
+                maxLength={400}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
               />
             </div>
 
@@ -318,18 +380,51 @@ export const CreateView: React.FC<CreateViewProps> = ({
               onChange={setTaskImage}
               bucket="task-images"
               userId={userId}
-              label="Attach Mockup or Reference Image (Optional)"
+              label="Task Image (Optional)"
             />
 
-            {/* Submit Button */}
-            <button
+            {/* Favorite Toggle */}
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsTaskFavorite(!isTaskFavorite)}
+                className={`p-2 rounded-xl border flex items-center gap-2 text-xs font-semibold transition-colors cursor-pointer ${
+                  isTaskFavorite
+                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/40'
+                    : 'bg-slate-50 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 border-slate-200 dark:border-zinc-700'
+                }`}
+              >
+                <Star
+                  className={`w-4 h-4 ${
+                    isTaskFavorite ? 'fill-amber-400 text-amber-400' : 'text-slate-400'
+                  }`}
+                />
+                <span>Mark as Favorite</span>
+              </button>
+            </div>
+
+            {/* Validation */}
+            {taskError && (
+              <p
+                id="task-error"
+                role="alert"
+                className="flex items-center gap-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {taskError}
+              </p>
+            )}
+
+            {/* Submit */}
+            <Button
               type="submit"
-              disabled={isSubmitting || !taskTitle.trim() || !selectedProjectId}
+              size="lg"
+              fullWidth
+              isLoading={isSubmitting}
               id="submit-task-btn"
-              className="w-full py-3 px-6 rounded-2xl bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white font-extrabold text-sm shadow-lg shadow-orange-500/30 disabled:opacity-50 transition-all cursor-pointer"
             >
-              {isSubmitting ? 'Adding Task...' : 'Add Task to Project'}
-            </button>
+              {isSubmitting ? 'Adding...' : 'Add Task'}
+            </Button>
           </form>
         )}
       </motion.div>

@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Class-based dark mode (toggled on <html>) instead of OS media query */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Safe-area aware padding for floating bottom navigation */
+@utility pb-safe {
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+}
+
 @layer base {
   :root {
     --bg-primary: #f8fafc;
