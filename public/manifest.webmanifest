@@ -1,7 +1,7 @@
 {
   "name": "TU DU",
   "short_name": "TU DU",
-  "description": "TU DU — a minimal progress tracker. Create progress, add tasks, complete tasks, track completion.",
+  "description": "TU DU progress tracker",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

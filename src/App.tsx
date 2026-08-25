@@ -39,6 +39,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [updateReady, setUpdateReady] = useState<boolean>(false);
 
   // Modals & Dialogs
   const [isAuthOpen, setIsAuthOpen] = useState(false);
@@ -236,11 +237,6 @@ export default function App() {
     }
   };
 
-  const handleUpdateUser = (updated: UserProfile) => {
-    setUser(updated);
-    addToast('success', 'Profile updated');
-  };
-
   // Recompute a project's live statistics from the given tasks array (no refetch).
   const recomputeProjectStats = useCallback(
     (projectId: string, tasksSource: ProgressTask[]) => {
@@ -259,6 +255,124 @@ export default function App() {
     },
     []
   );
+
+  const handleUpdateUser = (updated: UserProfile) => {
+    setUser(updated);
+    addToast('success', 'Profile updated');
+  };
+
+  // ---------------- Realtime sync (same-account multi-session) ----------------
+  // Row id is the identity: every event is an idempotent upsert/remove, so
+  // echoes of this device's own optimistic mutations never duplicate rows.
+
+  // Refs keep handlers stable and read fresh state without re-subscribing.
+  const projectsRef = React.useRef(projects);
+  const tasksRef = React.useRef(tasks);
+  useEffect(() => {
+    projectsRef.current = projects;
+    tasksRef.current = tasks;
+  }, [projects, tasks]);
+
+  const handleProjectChange = useCallback((payload: any) => {
+    const { eventType, new: newRow, old } = payload;
+
+    if (eventType === 'DELETE') {
+      const id = old?.id;
+      if (!id) return;
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+      setTasks((prev) => prev.filter((t) => t.project_id !== id));
+      setSelectedProject((prev) => (prev?.id === id ? null : prev));
+      return;
+    }
+
+    const row = newRow as ProgressProject;
+    if (!row?.id) return;
+    setProjects((prev) => {
+      const idx = prev.findIndex((p) => p.id === row.id);
+      if (idx === -1) {
+        // New project from another session — stats start at zero
+        return [
+          { ...row, total_tasks: 0, completed_tasks: 0, pending_tasks: 0, completion_percentage: 0 },
+          ...prev,
+        ];
+      }
+      // Merge DB columns; keep locally computed stats intact
+      const copy = [...prev];
+      copy[idx] = { ...copy[idx], ...row };
+      return copy;
+    });
+    setSelectedProject((prev) => (prev && prev.id === row.id ? { ...prev, ...row } : prev));
+  }, []);
+
+  const handleTaskChange = useCallback(
+    (payload: any) => {
+      const { eventType, new: newRow, old } = payload;
+
+      if (eventType === 'DELETE') {
+        const id = old?.id;
+        if (!id) return;
+        const target = tasksRef.current.find((t) => t.id === id);
+        const next = tasksRef.current.filter((t) => t.id !== id);
+        setTasks(next);
+        if (target) recomputeProjectStats(target.project_id, next);
+        return;
+      }
+
+      const row = newRow as ProgressTask;
+      if (!row?.id) return;
+      const idx = tasksRef.current.findIndex((t) => t.id === row.id);
+      const next =
+        idx === -1
+          ? [row, ...tasksRef.current]
+          : tasksRef.current.map((t) => (t.id === row.id ? { ...t, ...row } : t));
+      setTasks(next);
+      recomputeProjectStats(row.project_id, next);
+    },
+    [recomputeProjectStats]
+  );
+
+  // Subscribe while authenticated; stop on logout; never duplicate channels.
+  useEffect(() => {
+    if (!user || !supabase) return;
+    const uid = user.user_id;
+
+    const channel = supabase
+      .channel(`tudu-realtime-${uid}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'progress_projects', filter: `user_id=eq.${uid}` },
+        handleProjectChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'progress_tasks', filter: `user_id=eq.${uid}` },
+        handleTaskChange
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, handleProjectChange, handleTaskChange]);
+
+  // ---------------- PWA update flow ----------------
+  const applyingUpdateRef = React.useRef(false);
+  useEffect(() => {
+    const onUpdateReady = () => setUpdateReady(true);
+    window.addEventListener('tudu-update-ready', onUpdateReady);
+    return () => window.removeEventListener('tudu-update-ready', onUpdateReady);
+  }, []);
+
+  const applyAppUpdate = () => {
+    if (applyingUpdateRef.current) return;
+    applyingUpdateRef.current = true;
+    navigator.serviceWorker?.controller?.postMessage({ type: 'SKIP_WAITING' });
+    navigator.serviceWorker?.addEventListener(
+      'controllerchange',
+      () => window.location.reload(),
+      { once: true }
+    );
+  };
 
   // Project Actions
   const handleCreateProject = async (projectData: {
@@ -700,6 +814,20 @@ export default function App() {
           </>
         )}
       </main>
+
+      {/* PWA update prompt — user-initiated, never an automatic reload */}
+      {updateReady && (
+        <div className="fixed bottom-24 inset-x-0 z-40 flex justify-center px-4 pointer-events-none">
+          <div className="pointer-events-auto flex items-center gap-3 px-4 py-2.5 rounded-full glass-panel shadow-2xl border border-white/40 dark:border-zinc-800/80">
+            <span className="text-xs font-bold text-slate-700 dark:text-zinc-200">
+              New version available
+            </span>
+            <Button size="sm" onClick={applyAppUpdate}>
+              Refresh
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Glassmorphism Bottom Floating Navigation Bar */}
       <BottomNavigation
