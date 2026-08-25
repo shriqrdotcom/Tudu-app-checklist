@@ -6,7 +6,7 @@ import { SearchBar } from '../components/SearchBar';
 import { FilterTabs } from '../components/FilterTabs';
 import { SortMenu } from '../components/SortMenu';
 import { EmptyState } from '../components/EmptyState';
-import { LoadingState } from '../components/LoadingState';
+import { SkeletonList } from '../components/SkeletonList';
 
 interface DashboardViewProps {
   projects: ProgressProject[];
@@ -137,7 +137,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {isLoading ? (
-          <LoadingState label="Loading your progress..." description="Fetching projects from Supabase" />
+          <SkeletonList count={5} />
         ) : error ? (
           /* Load-failure state with retry */
           <div className="flex flex-col items-center justify-center p-8 sm:p-12 text-center rounded-2xl bg-slate-50/50 dark:bg-zinc-900/30 border border-dashed border-red-300 dark:border-red-900/40 my-4">

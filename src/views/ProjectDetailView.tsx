@@ -23,6 +23,8 @@ interface ProjectDetailViewProps {
   project: ProgressProject;
   tasks: ProgressTask[];
   isResetting?: boolean;
+  /** Task ids whose completion toggle is in flight (inline pending state). */
+  pendingTaskIds?: Set<string>;
   onBack: () => void;
   onToggleTaskComplete: (taskId: string, isCompleted: boolean) => void;
   onToggleTaskFavorite: (taskId: string, current: boolean) => void;
@@ -39,6 +41,7 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
   project,
   tasks,
   isResetting = false,
+  pendingTaskIds,
   onBack,
   onToggleTaskComplete,
   onToggleTaskFavorite,
@@ -387,6 +390,7 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                 <TaskCard
                   key={task.id}
                   task={task}
+                  pending={pendingTaskIds?.has(task.id) ?? false}
                   onToggleComplete={onToggleTaskComplete}
                   onToggleFavorite={onToggleTaskFavorite}
                   onEdit={onEditTask}

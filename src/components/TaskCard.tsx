@@ -8,16 +8,19 @@ interface TaskCardProps {
   task: ProgressTask;
   projectName?: string;
   projectColor?: string;
+  /** True while the completion toggle is being confirmed by Supabase. */
+  pending?: boolean;
   onToggleComplete: (taskId: string, isCompleted: boolean) => void;
   onToggleFavorite?: (taskId: string, current: boolean) => void;
   onEdit?: (task: ProgressTask) => void;
   onDelete?: (taskId: string) => void;
 }
 
-export const TaskCard: React.FC<TaskCardProps> = ({
+const TaskCardInner: React.FC<TaskCardProps> = ({
   task,
   projectName,
   projectColor = '#ff6b00',
+  pending = false,
   onToggleComplete,
   onToggleFavorite,
   onEdit,
@@ -56,30 +59,37 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         {/* Custom Checkbox (with comfortable touch padding) */}
         <button
           onClick={handleToggle}
+          disabled={pending}
           id={`task-check-${task.id}`}
           role="checkbox"
           aria-checked={task.is_completed}
           aria-label={task.is_completed ? `Mark "${task.title}" incomplete` : `Mark "${task.title}" complete`}
-          className="mt-0.5 -m-1 p-1 rounded-lg shrink-0 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500/60"
+          className="mt-0.5 -m-1 p-1 rounded-lg shrink-0 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500/60 disabled:cursor-wait"
         >
-          <motion.span
-            whileTap={{ scale: 0.85 }}
-            className={`w-5 h-5 rounded-md flex items-center justify-center border transition-all duration-200 ${
-              task.is_completed
-                ? 'bg-orange-500 border-orange-500 text-white shadow-sm'
-                : 'border-slate-300 dark:border-zinc-600 hover:border-orange-500 bg-white dark:bg-zinc-800'
-            }`}
-          >
-            {task.is_completed && (
-              <motion.span
-                initial={{ scale: 0, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ type: 'spring', stiffness: 500, damping: 22 }}
-              >
-                <Check className="w-3.5 h-3.5 stroke-[3]" />
-              </motion.span>
-            )}
-          </motion.span>
+          {pending ? (
+            <span className="w-5 h-5 flex items-center justify-center">
+              <span className="w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+            </span>
+          ) : (
+            <motion.span
+              whileTap={{ scale: 0.85 }}
+              className={`w-5 h-5 rounded-md flex items-center justify-center border transition-all duration-200 ${
+                task.is_completed
+                  ? 'bg-orange-500 border-orange-500 text-white shadow-sm'
+                  : 'border-slate-300 dark:border-zinc-600 hover:border-orange-500 bg-white dark:bg-zinc-800'
+              }`}
+            >
+              {task.is_completed && (
+                <motion.span
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 22 }}
+                >
+                  <Check className="w-3.5 h-3.5 stroke-[3]" />
+                </motion.span>
+              )}
+            </motion.span>
+          )}
         </button>
 
         {/* Details */}
@@ -199,3 +209,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     </motion.div>
   );
 };
+
+// Memoized: checklist rows only re-render when their own task data changes
+export const TaskCard = React.memo(TaskCardInner);

@@ -141,7 +141,7 @@ export class DataService {
 
   // --- PROJECTS ---
 
-  static async getProjects(userId: string): Promise<ProgressProject[]> {
+  static async getProjects(userId: string, knownTasks?: ProgressTask[]): Promise<ProgressProject[]> {
     const client = requireClient();
     const { data: projects, error } = await client
       .from('progress_projects')
@@ -150,14 +150,19 @@ export class DataService {
       .order('created_at', { ascending: false });
     if (error) throw error;
 
-    const { data: tasks, error: tasksError } = await client
-      .from('progress_tasks')
-      .select('project_id, is_completed')
-      .eq('user_id', userId);
-    if (tasksError) throw tasksError;
+    // Reuse already-fetched tasks when the caller has them (avoids a duplicate query)
+    let tasks: Array<Pick<ProgressTask, 'project_id' | 'is_completed'>> = knownTasks || [];
+    if (!knownTasks) {
+      const { data: fetched, error: tasksError } = await client
+        .from('progress_tasks')
+        .select('project_id, is_completed')
+        .eq('user_id', userId);
+      if (tasksError) throw tasksError;
+      tasks = fetched || [];
+    }
 
     return (projects || []).map((p) => {
-      const pTasks = (tasks || []).filter((t) => t.project_id === p.id);
+      const pTasks = tasks.filter((t) => t.project_id === p.id);
       const total = pTasks.length;
       const completed = pTasks.filter((t) => t.is_completed).length;
       const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;

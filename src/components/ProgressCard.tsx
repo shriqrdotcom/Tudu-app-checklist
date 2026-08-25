@@ -28,7 +28,7 @@ function formatRelativeTime(iso?: string): string {
  * image/avatar on the left, title + secondary info in the middle,
  * completion status on the right. TU DU identity: white/black + orange.
  */
-export const ProgressCard: React.FC<ProgressCardProps> = ({
+const ProgressCardInner: React.FC<ProgressCardProps> = ({
   project,
   onOpen,
   onToggleFavorite,
@@ -142,3 +142,5 @@ export const ProgressCard: React.FC<ProgressCardProps> = ({
     </motion.div>
   );
 };
+// Memoized: list rows only re-render when their own project data changes
+export const ProgressCard = React.memo(ProgressCardInner);

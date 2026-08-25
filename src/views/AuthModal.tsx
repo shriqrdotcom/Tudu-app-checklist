@@ -22,13 +22,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
   const isLiveSupabase = isSupabaseConfigured();
 
   const friendlyAuthError = (err: any): string => {
-    const code = err?.code || '';
+    const code = (err?.code || '') as string;
+    const status: number | undefined = err?.status;
     const message: string = err?.message || '';
 
-    if (code === 'user_banned' || /disabled|banned/i.test(message)) {
-      return 'This account is not available.';
+    // Safe diagnostic — auth error messages are generic strings; no tokens/secrets.
+    console.error('[TU DU] Sign-in failed:', { code, status, message });
+
+    if (/invalid api key/i.test(message) || status === 401) {
+      return 'Authentication configuration mismatch. Check the deployed environment variables.';
+    }
+    if (code === 'over_email_send_rate_limit' || code === 'over_request_rate_limit' || /rate limit|too many requests/i.test(message) || status === 429) {
+      return 'Too many attempts. Please wait a moment and try again.';
     }
     if (/email not confirmed/i.test(message)) {
+      return 'Email confirmation required.';
+    }
+    if (code === 'user_banned' || /disabled|banned/i.test(message)) {
       return 'This account is not available.';
     }
     if (/invalid login credentials|invalid credentials|user not found/i.test(message)) {
@@ -38,10 +48,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
       /failed to fetch|networkerror|network error|load failed/i.test(message) ||
       code === 'fetch_error'
     ) {
-      return 'Unable to connect. Please try again.';
-    }
-    if (/rate limit/i.test(message)) {
-      return 'Too many attempts. Please wait a moment and try again.';
+      return 'Unable to connect to Supabase. Please try again.';
     }
     return 'Unable to sign in. Please try again.';
   };
