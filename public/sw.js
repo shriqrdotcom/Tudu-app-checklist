@@ -82,3 +82,27 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
   }
 });
+
+// ------------------------------------------------------------
+// Reminder notifications: tapping focuses the existing app window
+// (or opens a fresh one) so the user lands on the overdue task's app.
+// ------------------------------------------------------------
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      const clientList = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true,
+      });
+      // Focus the most recent TU DU window if one exists
+      for (const client of clientList) {
+        if ('focus' in client) {
+          await client.focus();
+          return;
+        }
+      }
+      await self.clients.openWindow('/');
+    })()
+  );
+});

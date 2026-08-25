@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
 import { FilterStatus } from '../types';
+import { microBuzz } from '../lib/notificationManager';
 
 interface FilterTabsProps {
   activeFilter: FilterStatus;
@@ -34,7 +35,10 @@ export const FilterTabs: React.FC<FilterTabsProps> = ({
         return (
           <button
             key={tab.id}
-            onClick={() => onSelectFilter(tab.id)}
+            onClick={() => {
+              microBuzz(); // tactile feedback on filter change
+              onSelectFilter(tab.id);
+            }}
             className={`relative flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
               isActive
                 ? 'text-orange-600 dark:text-orange-400 font-bold'

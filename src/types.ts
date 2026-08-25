@@ -41,6 +41,14 @@ export interface ProgressTask {
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
+
+  // Reminder & Notification Engine (Phase 10)
+  /** User-scheduled deadline (ISO string). NULL = no reminder. */
+  due_datetime?: string | null;
+  /** Latched once the overdue alert fired for the current deadline. */
+  notified?: boolean;
+  /** Snooze target — suppresses re-alerting until this instant passes. */
+  snooze_until?: string | null;
 }
 
 export interface UserSettings {

@@ -57,6 +57,10 @@ function taskPatch(updates: Partial<ProgressTask>): Record<string, unknown> {
   if ('position' in updates) patch.position = updates.position;
   if ('completed_at' in updates) patch.completed_at = updates.completed_at;
   if ('project_id' in updates && updates.project_id) patch.project_id = updates.project_id;
+  // Reminder engine — explicit nulls are meaningful (clearing a deadline/snooze)
+  if ('due_datetime' in updates) patch.due_datetime = updates.due_datetime ?? null;
+  if ('notified' in updates) patch.notified = Boolean(updates.notified);
+  if ('snooze_until' in updates) patch.snooze_until = updates.snooze_until ?? null;
   return patch;
 }
 
@@ -325,7 +329,7 @@ export class DataService {
     taskData: Pick<
       ProgressTask,
       'project_id' | 'user_id' | 'title' | 'description' | 'image_url' | 'is_completed' | 'is_favorite' | 'position'
-    >
+    > & { due_datetime?: string | null }
   ): Promise<ProgressTask> {
     const client = requireClient();
 
@@ -352,6 +356,7 @@ export class DataService {
         completed_at: taskData.is_completed ? now : null,
         is_favorite: taskData.is_favorite ?? false,
         position,
+        due_datetime: taskData.due_datetime || null,
       })
       .select()
       .single();
@@ -387,6 +392,32 @@ export class DataService {
     if (error) throw error;
 
     if (data) touchProject(client, data.project_id);
+  }
+
+  /** Latch the overdue-alert flag so a deadline never notifies twice. */
+  static async setTaskNotified(taskId: string, notified: boolean = true): Promise<void> {
+    const client = requireClient();
+    const { error } = await client
+      .from('progress_tasks')
+      .update({ notified })
+      .eq('id', taskId);
+    if (error) throw error;
+  }
+
+  /**
+   * Snooze an overdue task: silence until `minutes` from now and re-arm the
+   * alert (notified=false) so the scheduler fires again when the snooze ends.
+   */
+  static async snoozeTask(taskId: string, minutes: number): Promise<void> {
+    const client = requireClient();
+    const { error } = await client
+      .from('progress_tasks')
+      .update({
+        snooze_until: new Date(Date.now() + minutes * 60_000).toISOString(),
+        notified: false,
+      })
+      .eq('id', taskId);
+    if (error) throw error;
   }
 
   static async deleteTask(taskId: string): Promise<void> {

@@ -8,6 +8,7 @@ import {
   Edit3,
   RotateCcw,
   MoreVertical,
+  CalendarClock,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ProgressProject, ProgressTask } from '../types';
@@ -15,7 +16,10 @@ import { ProgressBar } from '../components/ProgressBar';
 import { TaskCard } from '../components/TaskCard';
 import { SearchBar } from '../components/SearchBar';
 import { EmptyState } from '../components/EmptyState';
+import { TimeSelector } from '../components/TimeSelector';
 import { useClickOutside } from '../hooks/useClickOutside';
+import { microBuzz } from '../lib/notificationManager';
+import { formatDueAbsolute } from '../lib/dueTime';
 
 type TaskFilter = 'all' | 'pending' | 'completed' | 'favorites';
 
@@ -28,7 +32,12 @@ interface ProjectDetailViewProps {
   onBack: () => void;
   onToggleTaskComplete: (taskId: string, isCompleted: boolean) => void;
   onToggleTaskFavorite: (taskId: string, current: boolean) => void;
-  onAddTask: (taskData: { project_id: string; title: string; description?: string }) => Promise<void>;
+  onAddTask: (taskData: {
+    project_id: string;
+    title: string;
+    description?: string;
+    due_datetime?: string | null;
+  }) => Promise<void>;
   onDeleteTask: (taskId: string) => void;
   onEditTask: (task: ProgressTask) => void;
   onToggleFavorite: (projectId: string, current: boolean) => void;
@@ -55,6 +64,9 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
 }) => {
   const [quickTitle, setQuickTitle] = React.useState('');
   const [isAdding, setIsAdding] = React.useState(false);
+  // Quick-add scheduling section: optional date & time for the new task
+  const [quickDue, setQuickDue] = React.useState<string | null>(null);
+  const [showQuickTime, setShowQuickTime] = React.useState(false);
   const [taskSearch, setTaskSearch] = React.useState('');
   const [taskFilter, setTaskFilter] = React.useState<TaskFilter>('all');
   const [menuOpen, setMenuOpen] = React.useState(false);
@@ -114,8 +126,11 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
       await onAddTask({
         project_id: project.id,
         title: quickTitle.trim(),
+        due_datetime: quickDue,
       });
       setQuickTitle('');
+      setQuickDue(null);
+      setShowQuickTime(false);
     } catch (err) {
       console.error('Failed to add task:', err);
     } finally {
@@ -310,29 +325,70 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
       {/* Quick Add Task Input */}
       <form
         onSubmit={handleQuickAdd}
-        className="flex items-center gap-2 p-2 bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm focus-within:border-orange-500/50 transition-colors"
+        className="space-y-2 p-2 bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm focus-within:border-orange-500/50 transition-colors"
       >
-        <input
-          type="text"
-          value={quickTitle}
-          onChange={(e) => setQuickTitle(e.target.value)}
-          placeholder="Add a task..."
-          maxLength={140}
-          className="flex-1 min-w-0 px-3 py-2.5 bg-transparent text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none"
-        />
-        <button
-          type="submit"
-          disabled={isAdding || !quickTitle.trim()}
-          id="quick-add-task-btn"
-          className="px-4 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1 shadow-md shadow-orange-500/20 disabled:opacity-50 transition-all cursor-pointer active:scale-95 shrink-0"
-        >
-          {isAdding ? (
-            <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <Plus className="w-4 h-4" />
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={quickTitle}
+            onChange={(e) => setQuickTitle(e.target.value)}
+            placeholder="Add a task..."
+            maxLength={140}
+            className="flex-1 min-w-0 px-3 py-2.5 bg-transparent text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={isAdding || !quickTitle.trim()}
+            id="quick-add-task-btn"
+            className="px-4 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1 shadow-md shadow-orange-500/20 disabled:opacity-50 transition-all cursor-pointer active:scale-95 shrink-0"
+          >
+            {isAdding ? (
+              <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <Plus className="w-4 h-4" />
+            )}
+            <span>Add</span>
+          </button>
+        </div>
+
+        {/* Date & Time section — tap to schedule a reminder for this task */}
+        <div className="flex items-center gap-2 px-1">
+          <button
+            type="button"
+            onClick={() => {
+              microBuzz();
+              setShowQuickTime((v) => !v);
+            }}
+            aria-expanded={showQuickTime}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer active:scale-95 ${
+              showQuickTime || quickDue
+                ? 'bg-orange-500/10 dark:bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/40'
+                : 'bg-slate-50 dark:bg-zinc-800/60 text-slate-500 dark:text-zinc-400 border-slate-200 dark:border-zinc-700 hover:border-orange-500/40 hover:text-orange-600 dark:hover:text-orange-400'
+            }`}
+          >
+            <CalendarClock className="w-3.5 h-3.5" />
+            {quickDue ? 'Date & Time ✓' : 'Date & Time'}
+          </button>
+
+          {/* Compact summary of the chosen deadline (when panel is closed) */}
+          {quickDue && !showQuickTime && (
+            <span className="text-[11px] font-semibold text-orange-600 dark:text-orange-400 truncate">
+              {formatDueAbsolute(quickDue)}
+            </span>
           )}
-          <span>Add</span>
-        </button>
+        </div>
+
+        {showQuickTime && (
+          <div className="px-1 pb-1">
+            <TimeSelector
+              value={quickDue}
+              onChange={(iso) => {
+                setQuickDue(iso);
+                if (!iso) setShowQuickTime(false);
+              }}
+            />
+          </div>
+        )}
       </form>
 
       {/* Checklist Toolbar */}
@@ -353,7 +409,10 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
             return (
               <button
                 key={filter}
-                onClick={() => setTaskFilter(filter)}
+                onClick={() => {
+                  microBuzz(); // tactile feedback on filter change
+                  setTaskFilter(filter);
+                }}
                 className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
                   isActive
                     ? 'text-orange-600 dark:text-orange-400 font-bold'

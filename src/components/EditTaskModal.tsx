@@ -5,6 +5,7 @@ import { Button } from './Button';
 import { Input } from './Input';
 import { ImageUploader } from './ImageUploader';
 import { ProjectSelect } from './ProjectSelect';
+import { TimeSelector } from './TimeSelector';
 import { ProgressProject, ProgressTask } from '../types';
 
 interface EditTaskModalProps {
@@ -19,6 +20,7 @@ interface EditTaskModalProps {
     image_url: string;
     is_favorite: boolean;
     project_id: string;
+    due_datetime?: string | null;
   }) => Promise<void>;
 }
 
@@ -34,6 +36,7 @@ export const EditTaskModal: React.FC<EditTaskModalProps> = ({
   const [imageUrl, setImageUrl] = React.useState(task.image_url || '');
   const [isFavorite, setIsFavorite] = React.useState(Boolean(task.is_favorite));
   const [projectId, setProjectId] = React.useState(task.project_id);
+  const [dueDatetime, setDueDatetime] = React.useState<string | null>(task.due_datetime ?? null);
   const [errorMsg, setErrorMsg] = React.useState('');
   const [isSaving, setIsSaving] = React.useState(false);
 
@@ -56,6 +59,11 @@ export const EditTaskModal: React.FC<EditTaskModalProps> = ({
         image_url: imageUrl,
         is_favorite: isFavorite,
         project_id: projectId,
+        due_datetime: dueDatetime,
+        // Re-arm the reminder when the deadline changes or is set
+        ...(dueDatetime && dueDatetime !== task.due_datetime
+          ? { snooze_until: null, notified: false }
+          : {}),
       });
       onClose();
     } catch (err) {
@@ -103,6 +111,14 @@ export const EditTaskModal: React.FC<EditTaskModalProps> = ({
             maxLength={400}
             className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
           />
+        </div>
+
+        {/* Reminder scheduling — presets + exact date & time */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1.5">
+            Remind Me At <span className="text-slate-400 font-normal">(Optional)</span>
+          </label>
+          <TimeSelector value={dueDatetime} onChange={setDueDatetime} />
         </div>
 
         <ImageUploader

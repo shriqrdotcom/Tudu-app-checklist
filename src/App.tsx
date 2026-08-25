@@ -17,6 +17,9 @@ import { ProfileView } from './views/ProfileView';
 import { DataService, isSupabaseConfigured, supabase } from './lib/supabase';
 import { deleteStorageFileFromUrl, isSupabaseStorageUrl } from './lib/storage';
 import { clearSnapshot, hasAnySnapshot, loadSnapshot, saveSnapshot } from './lib/cache';
+import { useTaskTimer } from './hooks/useTaskTimer';
+import { OverdueAlarmModal } from './components/OverdueAlarmModal';
+import { NotificationPermissionBanner } from './components/NotificationPermissionBanner';
 import { ProgressProject, ProgressTask, UserProfile, ViewTab, ThemeMode, ToastMessage } from './types';
 
 export default function App() {
@@ -55,6 +58,10 @@ export default function App() {
   const [isResetting, setIsResetting] = useState(false);
   const [pendingTaskIds, setPendingTaskIds] = useState<Set<string>>(new Set());
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Reminder engine: FIFO queue of task ids whose deadline expired.
+  // The first entry is the alert currently on screen.
+  const [overdueQueue, setOverdueQueue] = useState<string[]>([]);
 
   // Apply Theme class to <html> element
   useEffect(() => {
@@ -647,6 +654,7 @@ export default function App() {
       description?: string;
       image_url?: string;
       is_favorite?: boolean;
+      due_datetime?: string | null;
     }): Promise<ProgressTask> => {
       const currentUser = userRef.current;
       if (!currentUser) throw new Error('You must be signed in.');
@@ -674,6 +682,9 @@ export default function App() {
         position: Number.MAX_SAFE_INTEGER - 1, // end of list until confirmed
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        due_datetime: taskData.due_datetime ?? null,
+        notified: false,
+        snooze_until: null,
       };
       const baseTasks = tasksRef.current;
       const withPlaceholder = [...baseTasks, optimisticTask];
@@ -691,6 +702,7 @@ export default function App() {
           is_completed: false,
           is_favorite: taskData.is_favorite ?? false,
           position: 0, // server assigns next position
+          due_datetime: taskData.due_datetime ?? null,
         });
       } catch (err) {
         // Rollback the optimistic row + stats
@@ -824,6 +836,9 @@ export default function App() {
     image_url: string;
     is_favorite: boolean;
     project_id: string;
+    due_datetime?: string | null;
+    snooze_until?: string | null;
+    notified?: boolean;
   }) => {
     if (!editingTask) return;
     const oldImage = editingTask.image_url || '';
@@ -878,6 +893,65 @@ export default function App() {
     },
     [addToast, recomputeProjectStats]
   );
+
+  // ---------------- Reminder & Notification Engine (Phase 10) ----------------
+
+  /** Persist notified=true: optimistic locally + Supabase write behind it. */
+  const handleMarkNotified = useCallback((taskId: string) => {
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, notified: true } : t)));
+    DataService.setTaskNotified(taskId, true).catch((err) =>
+      console.warn('[TU DU] Failed to persist notified flag:', err)
+    );
+  }, []);
+
+  /** Queue an overdue task for the interactive in-app alert (deduped). */
+  const pushOverdueAlert = useCallback((task: ProgressTask) => {
+    setOverdueQueue((prev) => (prev.includes(task.id) ? prev : [...prev, task.id]));
+  }, []);
+
+  // Background deadline engine — fires alarms, OS notifications and haptics
+  // at the exact second each task comes due (1s checker, dedupe-guarded).
+  useTaskTimer({
+    tasks,
+    enabled: Boolean(user) && isSupabaseConfigured(),
+    onAlarm: pushOverdueAlert,
+    markTriggered: handleMarkNotified,
+  });
+
+  const activeOverdueId = overdueQueue[0] ?? null;
+  const activeOverdueTask = activeOverdueId
+    ? tasks.find((t) => t.id === activeOverdueId) ?? null
+    : null;
+  const activeOverdueProject = activeOverdueTask
+    ? projectsRef.current.find((p) => p.id === activeOverdueTask.project_id) ?? null
+    : null;
+
+  const resolveActiveOverdue = useCallback(() => {
+    setOverdueQueue((prev) => prev.slice(1));
+  }, []);
+
+  const handleCompleteActiveOverdue = useCallback(() => {
+    if (!activeOverdueId) return;
+    void handleToggleTaskComplete(activeOverdueId, true);
+    resolveActiveOverdue();
+    addToast('success', 'Task completed', 'Nice — that one is off your plate.');
+  }, [activeOverdueId, handleToggleTaskComplete, resolveActiveOverdue, addToast]);
+
+  const handleSnoozeActiveOverdue = useCallback(() => {
+    if (!activeOverdueId) return;
+    const snoozeUntil = new Date(Date.now() + 5 * 60_000).toISOString();
+    // Optimistic: re-arm the alarm exactly 5 minutes out
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === activeOverdueId ? { ...t, snooze_until: snoozeUntil, notified: false } : t
+      )
+    );
+    DataService.snoozeTask(activeOverdueId, 5).catch((err) =>
+      console.warn('[TU DU] Snooze persistence failed:', err)
+    );
+    resolveActiveOverdue();
+    addToast('info', 'Snoozed for 5 minutes', 'The alarm will ring again.');
+  }, [activeOverdueId, resolveActiveOverdue, addToast]);
 
   // ---------- Render ----------
 
@@ -977,6 +1051,8 @@ export default function App() {
         </div>
       )}
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-6">
+        {/* One-tap reminder permission banner (self-dismissing) */}
+        {!selectedProject && <NotificationPermissionBanner />}
         {selectedProject && !projects.some((p) => p.id === selectedProject.id) ? (
           /* Deleted/missing project fallback */
           <div className="max-w-3xl mx-auto">
@@ -1131,6 +1207,15 @@ export default function App() {
         message="Reset all tasks in this progress? Tasks will become incomplete but will NOT be deleted. Completion stats will restart from zero."
         confirmLabel="Reset Progress"
         isDangerous={false}
+      />
+
+      {/* Overdue alarm — glassmorphic, ✅ Mark Complete Now / ⏰ Snooze 5 Min */}
+      <OverdueAlarmModal
+        task={activeOverdueTask}
+        project={activeOverdueProject}
+        onMarkDone={handleCompleteActiveOverdue}
+        onSnooze={handleSnoozeActiveOverdue}
+        onDismiss={resolveActiveOverdue}
       />
 
       {/* Toast Notifications */}

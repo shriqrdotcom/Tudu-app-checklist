@@ -57,6 +57,11 @@ create table if not exists public.user_settings (
 -- Upgrade path for databases created with the older TU DU schema
 alter table public.progress_tasks add column if not exists is_favorite boolean not null default false;
 
+-- Reminder & Notification Engine columns (Phase 10)
+alter table public.progress_tasks add column if not exists due_datetime timestamptz;
+alter table public.progress_tasks add column if not exists notified boolean not null default false;
+alter table public.progress_tasks add column if not exists snooze_until timestamptz;
+
 -- Helpful indexes
 create index if not exists idx_projects_user on public.progress_projects (user_id);
 create index if not exists idx_tasks_user on public.progress_tasks (user_id);
@@ -70,6 +75,11 @@ create index if not exists idx_settings_user on public.user_settings (user_id);
 create index if not exists idx_tasks_user_order on public.progress_tasks (user_id, position, created_at desc);
 create index if not exists idx_tasks_project_position on public.progress_tasks (project_id, position);
 create index if not exists idx_projects_user_created on public.progress_projects (user_id, created_at desc);
+
+-- Scheduler hot path: pending tasks with a deadline that still need an alert
+create index if not exists idx_tasks_due_tracking
+  on public.progress_tasks (due_datetime, is_completed, notified)
+  where due_datetime is not null;
 
 -- ============================================================
 -- TRIGGERS

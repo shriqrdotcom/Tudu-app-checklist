@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import { ProgressProject, ProgressTask } from '../types';
 import { ImageUploader } from '../components/ImageUploader';
 import { ProjectSelect } from '../components/ProjectSelect';
+import { TimeSelector } from '../components/TimeSelector';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { ACCENT_COLORS, DEFAULT_ACCENT } from '../lib/accentColors';
@@ -24,6 +25,7 @@ interface CreateViewProps {
     description: string;
     image_url: string;
     is_favorite: boolean;
+    due_datetime?: string | null;
   }) => Promise<ProgressTask>;
 }
 
@@ -52,6 +54,7 @@ export const CreateView: React.FC<CreateViewProps> = ({
   const [taskDesc, setTaskDesc] = React.useState('');
   const [taskImage, setTaskImage] = React.useState('');
   const [isTaskFavorite, setIsTaskFavorite] = React.useState(false);
+  const [taskDueDatetime, setTaskDueDatetime] = React.useState<string | null>(null);
   const [taskError, setTaskError] = React.useState('');
 
   const resetProjectForm = () => {
@@ -69,6 +72,7 @@ export const CreateView: React.FC<CreateViewProps> = ({
     setTaskDesc('');
     setTaskImage('');
     setIsTaskFavorite(false);
+    setTaskDueDatetime(null);
     setTaskError('');
   };
 
@@ -125,6 +129,7 @@ export const CreateView: React.FC<CreateViewProps> = ({
         description: taskDesc.trim(),
         image_url: taskImage,
         is_favorite: isTaskFavorite,
+        due_datetime: taskDueDatetime,
       });
       resetTaskForm();
     } catch (err) {
@@ -367,6 +372,14 @@ export const CreateView: React.FC<CreateViewProps> = ({
               maxLength={140}
               autoComplete="off"
             />
+
+            {/* Reminder scheduling — presets + exact date & time */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1.5">
+                Remind Me At <span className="text-slate-400 font-normal">(Optional)</span>
+              </label>
+              <TimeSelector value={taskDueDatetime} onChange={setTaskDueDatetime} />
+            </div>
 
             {/* Description */}
             <div>

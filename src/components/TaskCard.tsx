@@ -3,6 +3,8 @@ import { Check, Trash2, Edit2, Image as ImageIcon, Star } from 'lucide-react';
 import { motion } from 'motion/react';
 import confetti from 'canvas-confetti';
 import { ProgressTask } from '../types';
+import { formatDueCountdown } from '../lib/dueTime';
+import { microBuzz } from '../lib/notificationManager';
 
 interface TaskCardProps {
   task: ProgressTask;
@@ -28,8 +30,25 @@ const TaskCardInner: React.FC<TaskCardProps> = ({
 }) => {
   const [showImagePreview, setShowImagePreview] = React.useState(false);
 
+  // Live 1-second ticker for the countdown badge — but ONLY while the
+  // deadline is "relevant" (pending and within ±2h). Cards far in the
+  // future or long past render statically: zero cost at scale.
+  const dueMs = task.due_datetime ? Date.parse(task.due_datetime) : NaN;
+  const isDuePending = !Number.isNaN(dueMs) && !task.is_completed;
+  const needsSecondTick =
+    isDuePending && Math.abs(dueMs - Date.now()) < 2 * 60 * 60_000;
+  const [nowTick, setNowTick] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    if (!needsSecondTick) return;
+    setNowTick(Date.now());
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [needsSecondTick]);
+
   const handleToggle = () => {
     const nextState = !task.is_completed;
+    // Subtle haptic confirmation on every check/uncheck
+    microBuzz();
     onToggleComplete(task.id, nextState);
 
     // Trigger subtle confetti on completion
@@ -42,6 +61,12 @@ const TaskCardInner: React.FC<TaskCardProps> = ({
       });
     }
   };
+
+  // Countdown / overdue badge state, null when no deadline or completed
+  const dueBadge =
+    task.due_datetime && !task.is_completed
+      ? formatDueCountdown(task.due_datetime, nowTick)
+      : null;
 
   return (
     <motion.div
@@ -111,6 +136,20 @@ const TaskCardInner: React.FC<TaskCardProps> = ({
                 style={{ backgroundColor: projectColor }}
               >
                 {projectName}
+              </span>
+            )}
+
+            {/* Live countdown / flashing overdue badge */}
+            {dueBadge && (
+              <span
+                className={`inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full border tabular-nums ${
+                  dueBadge.overdue
+                    ? 'bg-red-500/15 dark:bg-red-500/20 text-red-600 dark:text-red-400 border-red-500/50 animate-pulse shadow-[0_0_12px_rgba(239,68,68,0.45)]'
+                    : 'bg-orange-500/10 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30'
+                }`}
+                title={task.due_datetime ? new Date(task.due_datetime).toLocaleString() : undefined}
+              >
+                {dueBadge.label}
               </span>
             )}
           </div>
