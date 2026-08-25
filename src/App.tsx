@@ -18,7 +18,8 @@ import { DataService, isSupabaseConfigured, supabase, detectDeadlineSchema } fro
 import { deleteStorageFileFromUrl, isSupabaseStorageUrl } from './lib/storage';
 import { clearSnapshot, hasAnySnapshot, loadSnapshot, saveSnapshot } from './lib/cache';
 import { usePrecisionTimer } from './hooks/usePrecisionTimer';
-import { OverdueAlarmModal } from './components/OverdueAlarmModal';
+import { useContinuousAlarm } from './hooks/useContinuousAlarm';
+import { ActiveAlarmModal } from './components/ActiveAlarmModal';
 import { NotificationPermissionBanner } from './components/NotificationPermissionBanner';
 import { ProgressProject, ProgressTask, UserProfile, ViewTab, ThemeMode, ToastMessage } from './types';
 
@@ -913,8 +914,23 @@ export default function App() {
     setOverdueQueue((prev) => (prev.includes(task.id) ? prev : [...prev, task.id]));
   }, []);
 
+  // Self-pruning queue: if an alarmed task becomes completed or disappears
+  // (done from another device/tab via realtime, or its checkbox while the
+  // modal rings), drop it immediately so the siren NEVER rings for a resolved
+  // task. Emptying the queue also silences the continuous alarm loop.
+  useEffect(() => {
+    setOverdueQueue((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev.filter((id) => {
+        const t = tasksRef.current.find((x) => x.id === id);
+        return Boolean(t && !t.is_completed);
+      });
+      return next.length === prev.length ? prev : next;
+    });
+  }, [tasks]);
+
   // Precision deadline engine — server-synced clock, drift-compensated loop,
-  // targeted wakes; fires alarms/OS notifications/haptics on the exact second.
+  // targeted wakes; fires alarms/OS notifications on the exact second.
   usePrecisionTimer({
     tasks,
     enabled: Boolean(user) && isSupabaseConfigured(),
@@ -923,6 +939,9 @@ export default function App() {
   });
 
   const activeOverdueId = overdueQueue[0] ?? null;
+  // Continuous ring: keyed on queue occupancy so resolving alarm #1 flows
+  // straight into #2 without the siren stuttering off→on.
+  useContinuousAlarm(overdueQueue.length > 0 ? activeOverdueId ?? 'active' : null);
   const activeOverdueTask = activeOverdueId
     ? tasks.find((t) => t.id === activeOverdueId) ?? null
     : null;
@@ -1213,13 +1232,14 @@ export default function App() {
         isDangerous={false}
       />
 
-      {/* Overdue alarm — glassmorphic, ✅ Mark Complete Now / ⏰ Snooze 5 Min */}
-      <OverdueAlarmModal
+      {/* Active alarm — continuous ring until user intervenes:
+          🛑 Stop Alarm / ✅ Mark Complete / ⏰ Snooze 5 Min */}
+      <ActiveAlarmModal
         task={activeOverdueTask}
         project={activeOverdueProject}
-        onMarkDone={handleCompleteActiveOverdue}
+        onStopAlarm={resolveActiveOverdue}
+        onMarkComplete={handleCompleteActiveOverdue}
         onSnooze={handleSnoozeActiveOverdue}
-        onDismiss={resolveActiveOverdue}
       />
 
       {/* Toast Notifications */}

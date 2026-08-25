@@ -33,10 +33,7 @@ import { ProgressTask } from '../types';
 import {
   areNotificationsSupported,
   getNotificationPermission,
-  OVERDUE_VIBRATION_PATTERN,
-  playAlertChime,
   showOverdueNotification,
-  vibrate,
 } from '../lib/notificationManager';
 import { getSyncedNow, parseInstant } from '../lib/timeUtils';
 
@@ -108,8 +105,9 @@ export function usePrecisionTimer({ tasks, enabled, onAlarm, markTriggered }: Us
 
         // ---- FIRE ----
         markTriggeredRef.current(task.id); // latch before any async work
-
-        vibrate(OVERDUE_VIBRATION_PATTERN);
+        // Audio + haptics are owned by the CONTINUOUS alarm loop
+        // (useContinuousAlarm ↔ audioSynthesizer) which rings until the user
+        // intervenes — so no one-shot triggers here.
 
         const isForeground =
           typeof document !== 'undefined' &&
@@ -117,7 +115,6 @@ export function usePrecisionTimer({ tasks, enabled, onAlarm, markTriggered }: Us
           document.hasFocus();
 
         if (isForeground) {
-          playAlertChime();
           onAlarmRef.current(task);
         } else if (
           areNotificationsSupported() &&

@@ -34,9 +34,9 @@ export interface DuePreset {
 }
 
 export const DUE_PRESETS: DuePreset[] = [
-  { kind: '15m', label: '+15 Mins' },
-  { kind: '30m', label: '+30 Mins' },
-  { kind: '1h', label: '+1 Hour' },
+  { kind: '15m', label: '+15m' },
+  { kind: '30m', label: '+30m' },
+  { kind: '1h', label: '+1 hr' },
   { kind: 'evening', label: 'Today 6 PM' },
   { kind: 'tomorrow9', label: 'Tomorrow 9 AM' },
 ];

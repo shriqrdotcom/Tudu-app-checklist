@@ -16,7 +16,7 @@ import { ProgressBar } from '../components/ProgressBar';
 import { TaskCard } from '../components/TaskCard';
 import { SearchBar } from '../components/SearchBar';
 import { EmptyState } from '../components/EmptyState';
-import { TimeSelector } from '../components/TimeSelector';
+import { SimpleTimePicker } from '../components/SimpleTimePicker';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { microBuzz } from '../lib/notificationManager';
 import { formatDueAbsolute } from '../lib/dueTime';
@@ -380,7 +380,7 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
 
         {showQuickTime && (
           <div className="px-1 pb-1">
-            <TimeSelector
+            <SimpleTimePicker
               value={quickDue}
               onChange={(iso) => {
                 setQuickDue(iso);

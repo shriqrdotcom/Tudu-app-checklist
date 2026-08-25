@@ -4,7 +4,7 @@ import { motion } from 'motion/react';
 import { ProgressProject, ProgressTask } from '../types';
 import { ImageUploader } from '../components/ImageUploader';
 import { ProjectSelect } from '../components/ProjectSelect';
-import { TimeSelector } from '../components/TimeSelector';
+import { SimpleTimePicker } from '../components/SimpleTimePicker';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { ACCENT_COLORS, DEFAULT_ACCENT } from '../lib/accentColors';
@@ -373,12 +373,12 @@ export const CreateView: React.FC<CreateViewProps> = ({
               autoComplete="off"
             />
 
-            {/* Reminder scheduling — presets + exact date & time */}
+            {/* Reminder scheduling — preset chips + native date & time */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1.5">
                 Remind Me At <span className="text-slate-400 font-normal">(Optional)</span>
               </label>
-              <TimeSelector value={taskDueDatetime} onChange={setTaskDueDatetime} />
+              <SimpleTimePicker value={taskDueDatetime} onChange={setTaskDueDatetime} />
             </div>
 
             {/* Description */}

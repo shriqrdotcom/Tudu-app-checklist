@@ -5,7 +5,7 @@ import { Button } from './Button';
 import { Input } from './Input';
 import { ImageUploader } from './ImageUploader';
 import { ProjectSelect } from './ProjectSelect';
-import { TimeSelector } from './TimeSelector';
+import { SimpleTimePicker } from './SimpleTimePicker';
 import { ProgressProject, ProgressTask } from '../types';
 
 interface EditTaskModalProps {
@@ -113,12 +113,12 @@ export const EditTaskModal: React.FC<EditTaskModalProps> = ({
           />
         </div>
 
-        {/* Reminder scheduling — presets + exact date & time */}
+        {/* Reminder scheduling — preset chips + native date & time */}
         <div>
           <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1.5">
             Remind Me At <span className="text-slate-400 font-normal">(Optional)</span>
           </label>
-          <TimeSelector value={dueDatetime} onChange={setDueDatetime} />
+          <SimpleTimePicker value={dueDatetime} onChange={setDueDatetime} />
         </div>
 
         <ImageUploader
