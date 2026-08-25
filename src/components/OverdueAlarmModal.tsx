@@ -16,7 +16,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { BellRing } from 'lucide-react';
 import { ProgressProject, ProgressTask } from '../types';
 import { Button } from './Button';
-import { formatDueAbsolute } from '../lib/dueTime';
+import { formatDueAbsolute, getSyncedNow, remainingTime } from '../lib/timeUtils';
 
 interface OverdueAlarmModalProps {
   task: ProgressTask | null;
@@ -34,6 +34,23 @@ export const OverdueAlarmModal: React.FC<OverdueAlarmModalProps> = ({
   onSnooze,
   onDismiss,
 }) => {
+  // Live per-second "overdue by" readout while the modal is on screen
+  const [nowTick, setNowTick] = React.useState(() => getSyncedNow());
+  React.useEffect(() => {
+    if (!task) return;
+    const timer = window.setInterval(() => setNowTick(getSyncedNow()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [task]);
+
+  const live = task ? remainingTime(task.due_datetime ?? null, nowTick) : null;
+  const overdueLabel = live
+    ? live.hours >= 1
+      ? `${live.hours}h ${live.minutes}m ${live.seconds}s`
+      : live.minutes >= 1
+        ? `${live.minutes}m ${live.seconds}s`
+        : `${live.seconds}s`
+    : '—';
+
   return (
     <AnimatePresence>
       {task && (
@@ -106,7 +123,10 @@ export const OverdueAlarmModal: React.FC<OverdueAlarmModalProps> = ({
                   Time is up! Complete this task now.
                 </p>
                 <p className="text-[11px] font-semibold text-slate-500 dark:text-zinc-400 mt-1">
-                  Scheduled for {formatDueAbsolute(task.due_datetime || '')} — still pending.
+                  Scheduled for {task ? formatDueAbsolute(task.due_datetime || '') : ''} — overdue by{' '}
+                  <span className="font-black text-red-500 dark:text-red-400 tabular-nums">
+                    {overdueLabel}
+                  </span>
                 </p>
               </div>
 

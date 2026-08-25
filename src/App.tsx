@@ -17,7 +17,7 @@ import { ProfileView } from './views/ProfileView';
 import { DataService, isSupabaseConfigured, supabase, detectDeadlineSchema } from './lib/supabase';
 import { deleteStorageFileFromUrl, isSupabaseStorageUrl } from './lib/storage';
 import { clearSnapshot, hasAnySnapshot, loadSnapshot, saveSnapshot } from './lib/cache';
-import { useTaskTimer } from './hooks/useTaskTimer';
+import { usePrecisionTimer } from './hooks/usePrecisionTimer';
 import { OverdueAlarmModal } from './components/OverdueAlarmModal';
 import { NotificationPermissionBanner } from './components/NotificationPermissionBanner';
 import { ProgressProject, ProgressTask, UserProfile, ViewTab, ThemeMode, ToastMessage } from './types';
@@ -913,9 +913,9 @@ export default function App() {
     setOverdueQueue((prev) => (prev.includes(task.id) ? prev : [...prev, task.id]));
   }, []);
 
-  // Background deadline engine — fires alarms, OS notifications and haptics
-  // at the exact second each task comes due (1s checker, dedupe-guarded).
-  useTaskTimer({
+  // Precision deadline engine — server-synced clock, drift-compensated loop,
+  // targeted wakes; fires alarms/OS notifications/haptics on the exact second.
+  usePrecisionTimer({
     tasks,
     enabled: Boolean(user) && isSupabaseConfigured(),
     onAlarm: pushOverdueAlert,

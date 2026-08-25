@@ -16,8 +16,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   DUE_PRESETS,
   DuePresetKind,
-  formatDueAbsolute,
   resolvePreset,
+  splitIntoClockParts,
+  toUtcIsoFromLocal,
+  formatDueAbsolute,
   toDatetimeLocalValue,
 } from '../lib/dueTime';
 import { microBuzz } from '../lib/notificationManager';
@@ -29,16 +31,6 @@ interface TimeSelectorProps {
   onChange: (iso: string | null) => void;
 }
 
-/** Build a Date from date-string parts + 12h clock segments (local time). */
-function composeIso(dateYmd: string, hour12: number, minute: number, ampm: 'AM' | 'PM'): string | null {
-  if (!dateYmd) return null;
-  const h24 = ampm === 'AM' ? (hour12 === 12 ? 0 : hour12) : hour12 === 12 ? 12 : hour12 + 12;
-  const d = new Date(`${dateYmd}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return null;
-  d.setHours(h24, minute, 0, 0);
-  return d.toISOString();
-}
-
 export const TimeSelector: React.FC<TimeSelectorProps> = ({ value, onChange }) => {
   const [customOpen, setCustomOpen] = React.useState(false);
 
@@ -47,9 +39,9 @@ export const TimeSelector: React.FC<TimeSelectorProps> = ({ value, onChange }) =
   const [dateYmd, setDateYmd] = React.useState<string>(
     initial ? toDatetimeLocalValue(initial).slice(0, 10) : toLocalTodayYmd()
   );
-  const [hour12, setHour12] = React.useState<number>(() => splitClock(initial).hour12 ?? 9);
-  const [minute, setMinute] = React.useState<number>(() => splitClock(initial).minute ?? 0);
-  const [ampm, setAmpm] = React.useState<'AM' | 'PM'>(() => splitClock(initial).ampm ?? 'PM');
+  const [hour12, setHour12] = React.useState<number>(() => splitIntoClockParts(initial).hour12 ?? 9);
+  const [minute, setMinute] = React.useState<number>(() => splitIntoClockParts(initial).minute ?? 0);
+  const [ampm, setAmpm] = React.useState<'AM' | 'PM'>(() => splitIntoClockParts(initial).ampm ?? 'PM');
 
   // Keep custom fields in sync when the value is changed externally (form reset)
   React.useEffect(() => {
@@ -58,7 +50,7 @@ export const TimeSelector: React.FC<TimeSelectorProps> = ({ value, onChange }) =
       return;
     }
     setDateYmd(toDatetimeLocalValue(value).slice(0, 10));
-    const c = splitClock(value);
+    const c = splitIntoClockParts(value);
     if (c.hour12 != null) setHour12(c.hour12);
     if (c.minute != null) setMinute(c.minute);
     if (c.ampm) setAmpm(c.ampm);
@@ -82,7 +74,7 @@ export const TimeSelector: React.FC<TimeSelectorProps> = ({ value, onChange }) =
     nextMinute: number = minute,
     nextAmpm: 'AM' | 'PM' = ampm
   ) => {
-    const iso = composeIso(nextDate, nextHour, nextMinute, nextAmpm);
+    const iso = toUtcIsoFromLocal(nextDate, nextHour, nextMinute, nextAmpm);
     if (iso) onChange(iso);
   };
 
@@ -274,23 +266,6 @@ function toLocalTodayYmd(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-/** Split an ISO instant into 12-hour clock parts (local timezone). */
-function splitClock(iso?: string | null): { hour12?: number; minute?: number; ampm?: 'AM' | 'PM' } {
-  if (!iso) return {};
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return {};
-    const h24 = d.getHours();
-    return {
-      hour12: h24 % 12 === 0 ? 12 : h24 % 12,
-      minute: d.getMinutes(),
-      ampm: h24 >= 12 ? 'PM' : 'AM',
-    };
-  } catch {
-    return {};
-  }
 }
 
 /** True when the stored instant matches what this preset would resolve to now. */

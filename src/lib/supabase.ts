@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { ProgressProject, ProgressTask, UserProfile, ThemeMode } from '../types';
+import { recordServerTimeSample } from './timeUtils';
 
 // Detect Supabase env credentials (client-safe anon key only)
 const metaEnv = (import.meta as any).env || {};
@@ -10,12 +11,30 @@ export const isSupabaseConfigured = (): boolean => {
   return Boolean(supabaseUrl && supabaseAnonKey && supabaseUrl !== 'MY_SUPABASE_URL');
 };
 
+// ------------------------------------------------------------
+// Clock-syncing fetch wrapper: every Supabase response's HTTP `Date` header
+// feeds an NTP-lite offset estimate so alarm math uses SERVER truth instead
+// of a potentially skewed device clock (Phase 12).
+// ------------------------------------------------------------
+async function fetchWithClockSync(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  const startedAt = Date.now();
+  const response = await fetch(input as RequestInfo, init);
+  recordServerTimeSample(response, startedAt);
+  return response;
+}
+
 export const supabase: SupabaseClient | null = isSupabaseConfigured()
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
+      },
+      global: {
+        fetch: fetchWithClockSync,
       },
     })
   : null;

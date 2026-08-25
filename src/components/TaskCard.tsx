@@ -3,7 +3,7 @@ import { Check, Trash2, Edit2, Image as ImageIcon, Star } from 'lucide-react';
 import { motion } from 'motion/react';
 import confetti from 'canvas-confetti';
 import { ProgressTask } from '../types';
-import { formatDueCountdown } from '../lib/dueTime';
+import { formatCountdownLabel, getSyncedNow, parseInstant, remainingTime } from '../lib/timeUtils';
 import { microBuzz } from '../lib/notificationManager';
 
 interface TaskCardProps {
@@ -30,18 +30,18 @@ const TaskCardInner: React.FC<TaskCardProps> = ({
 }) => {
   const [showImagePreview, setShowImagePreview] = React.useState(false);
 
-  // Live 1-second ticker for the countdown badge — but ONLY while the
-  // deadline is "relevant" (pending and within ±2h). Cards far in the
-  // future or long past render statically: zero cost at scale.
-  const dueMs = task.due_datetime ? Date.parse(task.due_datetime) : NaN;
-  const isDuePending = !Number.isNaN(dueMs) && !task.is_completed;
+  // Live 1-second ticker for the countdown badge — ONLY while the deadline is
+  // relevant (pending and within ±2h). Far-future/long-past cards render
+  // statically: zero timer cost at scale. Uses the SERVER-SYNCED clock.
+  const dueMs = parseInstant(task.due_datetime ?? null);
+  const isDuePending = dueMs != null && !task.is_completed;
   const needsSecondTick =
-    isDuePending && Math.abs(dueMs - Date.now()) < 2 * 60 * 60_000;
-  const [nowTick, setNowTick] = React.useState(() => Date.now());
+    isDuePending && Math.abs(dueMs - getSyncedNow()) < 2 * 60 * 60_000;
+  const [nowTick, setNowTick] = React.useState(() => getSyncedNow());
   React.useEffect(() => {
     if (!needsSecondTick) return;
-    setNowTick(Date.now());
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
+    setNowTick(getSyncedNow());
+    const timer = window.setInterval(() => setNowTick(getSyncedNow()), 1_000);
     return () => window.clearInterval(timer);
   }, [needsSecondTick]);
 
@@ -65,7 +65,10 @@ const TaskCardInner: React.FC<TaskCardProps> = ({
   // Countdown / overdue badge state, null when no deadline or completed
   const dueBadge =
     task.due_datetime && !task.is_completed
-      ? formatDueCountdown(task.due_datetime, nowTick)
+      ? {
+          label: formatCountdownLabel(task.due_datetime, nowTick),
+          overdue: remainingTime(task.due_datetime, nowTick)?.isOverdue === true,
+        }
       : null;
 
   return (
