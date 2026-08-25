@@ -190,7 +190,16 @@ export class DataService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      // Safe diagnostic only — PostgREST messages contain no secrets.
+      console.error('[TU DU] create project failed:', {
+        message: error.message,
+        code: (error as any).code,
+        details: (error as any).details,
+        hint: (error as any).hint,
+      });
+      throw error;
+    }
     return {
       ...data,
       total_tasks: 0,

@@ -89,9 +89,18 @@ export const CreateView: React.FC<CreateViewProps> = ({
         is_favorite: isFavorite,
       });
       resetProjectForm();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to create progress:', err);
-      setProjectError('Something went wrong. Please try again.');
+      const msg: string = err?.message || '';
+      if (/could not find the table|PGRST205|schema cache/i.test(msg)) {
+        setProjectError(
+          'Database setup incomplete. Open Profile → Supabase Backend, copy the SQL, and run it in Supabase → SQL Editor.'
+        );
+      } else if (/failed to fetch|networkerror|network error|load failed/i.test(msg)) {
+        setProjectError('Unable to connect. Please try again.');
+      } else {
+        setProjectError('Unable to create progress. Please try again.');
+      }
     } finally {
       setIsSubmitting(false);
     }
