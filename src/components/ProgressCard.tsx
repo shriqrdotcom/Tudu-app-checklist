@@ -10,17 +10,20 @@ interface ProgressCardProps {
   onToggleFavorite: (projectId: string, current: boolean) => void;
 }
 
+// One shared formatter — constructing Intl.RelativeTimeFormat is expensive and
+// was previously done for every card on every render.
+const relativeTimeFormat = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+
 function formatRelativeTime(iso?: string): string {
   if (!iso) return 'Recently';
   const date = new Date(iso);
   const diffMinutes = Math.round((date.getTime() - Date.now()) / (1000 * 60));
-  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
-  if (Math.abs(diffMinutes) < 60) return rtf.format(diffMinutes, 'minute');
+  if (Math.abs(diffMinutes) < 60) return relativeTimeFormat.format(diffMinutes, 'minute');
   const diffHours = Math.round(diffMinutes / 60);
-  if (Math.abs(diffHours) < 24) return rtf.format(diffHours, 'hour');
+  if (Math.abs(diffHours) < 24) return relativeTimeFormat.format(diffHours, 'hour');
   const diffDays = Math.round(diffHours / 24);
-  if (Math.abs(diffDays) < 30) return rtf.format(diffDays, 'day');
-  return rtf.format(Math.round(diffDays / 30), 'month');
+  if (Math.abs(diffDays) < 30) return relativeTimeFormat.format(diffDays, 'day');
+  return relativeTimeFormat.format(Math.round(diffDays / 30), 'month');
 }
 
 /**

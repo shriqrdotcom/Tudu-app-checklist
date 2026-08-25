@@ -1,17 +1,27 @@
 /* TU DU service worker — minimal, production-safe.
+ * - App shell ('/') precached at install for instant offline/warm navigations.
  * - Static hashed assets (/assets/*): cache-first (immutable content).
- * - App shell / navigations: network-first with offline fallback to cached shell.
+ * - Navigations: network-first with offline fallback to cached shell.
  * - Supabase & all cross-origin requests: NEVER cached — always network.
- * - Updates: new deployments get a new VERSION → old caches purged on activate.
- *   A waiting worker activates when the user accepts the in-app update prompt
- *   (SKIP_WAITING message) or on next app launch — never an automatic reload.
+ * - Updates: a new worker WAITS until the user accepts the in-app update
+ *   prompt (SKIP_WAITING message). No automatic reloads, no update loops.
  */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `tu-du-${VERSION}`;
 
-self.addEventListener('install', () => {
-  // No precache: the shell is network-first and assets are cached on demand.
-  self.skipWaiting();
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    (async () => {
+      try {
+        const cache = await caches.open(CACHE);
+        await cache.add(new Request('/', { cache: 'no-cache' }));
+      } catch {
+        /* offline at install — navigation fallback handles it later */
+      }
+      // NOTE: no skipWaiting() here — the worker waits so the running page
+      // stays in control. Activation happens via the user-initiated prompt.
+    })()
+  );
 });
 
 self.addEventListener('activate', (event) => {

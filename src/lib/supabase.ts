@@ -60,63 +60,53 @@ function taskPatch(updates: Partial<ProgressTask>): Record<string, unknown> {
   return patch;
 }
 
-async function touchProject(client: SupabaseClient, projectId: string): Promise<void> {
-  await client
+/**
+ * Fire-and-forget `updated_at` touch on the parent project.
+ * Never awaited: stats/percentages are computed client-side from tasks, so the
+ * touch only influences sort order. Awaiting it would double the round trips
+ * of every task mutation and delay confirmation of user actions.
+ */
+function touchProject(client: SupabaseClient, projectId: string): void {
+  client
     .from('progress_projects')
     .update({ updated_at: new Date().toISOString() })
-    .eq('id', projectId);
+    .eq('id', projectId)
+    .then(undefined, () => {
+      /* best-effort — next successful mutation refreshes ordering */
+    });
+}
+
+/** Compute per-project stats in a single O(T) pass (scales to 1000+ tasks). */
+export function computeProjectStatsMap(tasks: Array<Pick<ProgressTask, 'project_id' | 'is_completed'>>) {
+  const stats = new Map<string, { total_tasks: number; completed_tasks: number; pending_tasks: number; completion_percentage: number }>();
+  for (const t of tasks) {
+    const s = stats.get(t.project_id) || { total_tasks: 0, completed_tasks: 0, pending_tasks: 0, completion_percentage: 0 };
+    s.total_tasks += 1;
+    if (t.is_completed) s.completed_tasks += 1;
+    else s.pending_tasks += 1;
+    stats.set(t.project_id, s);
+  }
+  for (const s of stats.values()) {
+    s.completion_percentage = s.total_tasks > 0 ? Math.round((s.completed_tasks / s.total_tasks) * 100) : 0;
+  }
+  return stats;
+}
+
+function withStats(projects: ProgressProject[], stats: ReturnType<typeof computeProjectStatsMap>): ProgressProject[] {
+  return projects.map((p) => {
+    const s = stats.get(p.id);
+    return {
+      ...p,
+      total_tasks: s?.total_tasks ?? 0,
+      completed_tasks: s?.completed_tasks ?? 0,
+      pending_tasks: s?.pending_tasks ?? 0,
+      completion_percentage: s?.completion_percentage ?? 0,
+    };
+  });
 }
 
 export class DataService {
   // --- AUTH / PROFILE ---
-
-  static async getCurrentUser(): Promise<UserProfile | null> {
-    const client = requireClient();
-    const { data: { user }, error } = await client.auth.getUser();
-    if (error) throw error;
-    if (!user) return null;
-
-    // A valid session IS an authenticated user — never fail login just
-    // because the profiles table is missing or not provisioned yet.
-    const fallbackProfile: UserProfile = {
-      id: user.id,
-      user_id: user.id,
-      email: user.email ?? undefined,
-      name:
-        (user.user_metadata?.name as string) ||
-        user.email?.split('@')[0] ||
-        'TU DU User',
-      avatar_url: (user.user_metadata?.avatar_url as string) || undefined,
-      created_at: user.created_at ?? new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
-    try {
-      const { data: profile, error: profileError } = await client
-        .from('profiles')
-        .select('*')
-        .eq('user_id', user.id)
-        .maybeSingle();
-
-      if (profileError) {
-        console.warn('[TU DU] profiles table unavailable — using auth metadata for this session.');
-        return fallbackProfile;
-      }
-      if (profile) return { ...profile, email: user.email ?? undefined };
-
-      // No row yet — create one (the DB trigger normally handles this)
-      const { data: created, error: insertError } = await client
-        .from('profiles')
-        .insert({ user_id: user.id, name: fallbackProfile.name })
-        .select()
-        .single();
-      if (insertError) return fallbackProfile;
-      return { ...created, email: user.email ?? undefined };
-    } catch {
-      console.warn('[TU DU] profiles lookup failed — using auth metadata for this session.');
-      return fallbackProfile;
-    }
-  }
 
   static async updateProfile(
     userId: string,
@@ -137,6 +127,100 @@ export class DataService {
     const client = requireClient();
     const { error } = await client.auth.signOut();
     if (error) throw error;
+  }
+
+  /**
+   * Restore the persisted session from local storage WITHOUT a network call.
+   * `auth.getUser()` validates the JWT against the server (1 round trip) —
+   * too slow for the startup critical path. The session JWT is used directly
+   * for RLS-protected queries; supabase-js auto-refreshes expired tokens.
+   */
+  static async restoreSession(): Promise<UserProfile | null> {
+    const client = requireClient();
+    const { data: { session } } = await client.auth.getSession();
+    const sUser = session?.user;
+    if (!sUser || !session?.access_token) return null;
+    return {
+      id: sUser.id,
+      user_id: sUser.id,
+      email: sUser.email ?? undefined,
+      name:
+        (sUser.user_metadata?.name as string) ||
+        sUser.email?.split('@')[0] ||
+        'TU DU User',
+      avatar_url: (sUser.user_metadata?.avatar_url as string) || undefined,
+      created_at: sUser.created_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  static async fetchProfile(userId: string): Promise<UserProfile | null> {
+    const client = requireClient();
+
+    const fallbackProfile = (email?: string): UserProfile => ({
+      id: userId,
+      user_id: userId,
+      email,
+      name: 'TU DU User',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    try {
+      const { data: profile, error } = await client
+        .from('profiles')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (error) return null; // table not provisioned yet — caller falls back
+      if (profile) return profile;
+
+      // No row yet — create one (the DB trigger normally handles this)
+      const { data: created } = await client
+        .from('profiles')
+        .insert({ user_id: userId })
+        .select()
+        .single();
+      return created || fallbackProfile();
+    } catch {
+      return fallbackProfile();
+    }
+  }
+
+  /**
+   * Fetch EVERYTHING the app needs in one parallel batch (1 round-trip of wall
+   * time instead of the previous 4-request waterfall). Projects stats are
+   * computed locally from tasks — no extra queries, no joins.
+   */
+  static async fetchAllData(userId: string): Promise<{
+    profile: UserProfile | null;
+    projects: ProgressProject[];
+    tasks: ProgressTask[];
+    theme: ThemeMode | null;
+  }> {
+    const client = requireClient();
+    const [profileRes, projectsRes, tasksRes, themeRes] = await Promise.all([
+      this.fetchProfile(userId),
+      client.from('progress_projects').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      client
+        .from('progress_tasks')
+        .select('*')
+        .eq('user_id', userId)
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: false }),
+      client.from('user_settings').select('theme').eq('user_id', userId).maybeSingle(),
+    ]);
+
+    if (projectsRes.error) throw projectsRes.error;
+    if (tasksRes.error) throw tasksRes.error;
+
+    const tasks: ProgressTask[] = tasksRes.data || [];
+    const projects = withStats(projectsRes.data || [], computeProjectStatsMap(tasks));
+    const theme =
+      themeRes.data?.theme === 'dark' || themeRes.data?.theme === 'light' ? themeRes.data.theme : null;
+
+    return { profile: profileRes, projects, tasks, theme };
   }
 
   // --- PROJECTS ---
@@ -161,19 +245,7 @@ export class DataService {
       tasks = fetched || [];
     }
 
-    return (projects || []).map((p) => {
-      const pTasks = tasks.filter((t) => t.project_id === p.id);
-      const total = pTasks.length;
-      const completed = pTasks.filter((t) => t.is_completed).length;
-      const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
-      return {
-        ...p,
-        total_tasks: total,
-        completed_tasks: completed,
-        pending_tasks: total - completed,
-        completion_percentage: percentage,
-      };
-    });
+    return withStats(projects || [], computeProjectStatsMap(tasks));
   }
 
   static async createProject(
@@ -285,7 +357,7 @@ export class DataService {
       .single();
     if (error) throw error;
 
-    await touchProject(client, taskData.project_id);
+    touchProject(client, taskData.project_id);
     return data;
   }
 
@@ -300,7 +372,7 @@ export class DataService {
       .single();
     if (error) throw error;
 
-    if (data) await touchProject(client, data.project_id);
+    if (data) touchProject(client, data.project_id);
     return data;
   }
 
@@ -314,7 +386,7 @@ export class DataService {
       .single();
     if (error) throw error;
 
-    if (data) await touchProject(client, data.project_id);
+    if (data) touchProject(client, data.project_id);
   }
 
   static async deleteTask(taskId: string): Promise<void> {
@@ -328,7 +400,7 @@ export class DataService {
     const { error } = await client.from('progress_tasks').delete().eq('id', taskId);
     if (error) throw error;
 
-    if (data) await touchProject(client, data.project_id);
+    if (data) touchProject(client, data.project_id);
   }
 
   /** Mark every task in a project incomplete (tasks are kept, progress is cleared). */

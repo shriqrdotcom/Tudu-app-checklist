@@ -16,6 +16,7 @@ import { AuthModal } from './views/AuthModal';
 import { ProfileView } from './views/ProfileView';
 import { DataService, isSupabaseConfigured, supabase } from './lib/supabase';
 import { deleteStorageFileFromUrl, isSupabaseStorageUrl } from './lib/storage';
+import { clearSnapshot, hasAnySnapshot, loadSnapshot, saveSnapshot } from './lib/cache';
 import { ProgressProject, ProgressTask, UserProfile, ViewTab, ThemeMode, ToastMessage } from './types';
 
 export default function App() {
@@ -35,7 +36,10 @@ export default function App() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [projects, setProjects] = useState<ProgressProject[]>([]);
   const [tasks, setTasks] = useState<ProgressTask[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Boot loader is skipped entirely when a cache snapshot exists on this
+  // device (synchronous probe) — cached data paints instead, zero flash.
+  const [initialHasCache] = useState<boolean>(() => hasAnySnapshot());
+  const [isLoading, setIsLoading] = useState<boolean>(() => !initialHasCache);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -78,9 +82,15 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Persist theme to the user's server-side settings (fire & forget)
+  // Persist theme to the user's server-side settings (fire & forget).
+  // Guarded so an identity change of `user` (every refresh) never re-upserts
+  // the same theme — one write per actual change per session.
+  const persistedThemeRef = React.useRef<string>('');
   useEffect(() => {
     if (!user || !isSupabaseConfigured()) return;
+    const signature = `${user.user_id}:${theme}`;
+    if (persistedThemeRef.current === signature) return;
+    persistedThemeRef.current = signature;
     DataService.setUserTheme(user.user_id, theme).catch((err) =>
       console.warn('Failed to persist theme:', err)
     );
@@ -100,13 +110,39 @@ export default function App() {
   const userRef = React.useRef(user);
   const isFetchingRef = React.useRef(false);
   const lastFetchedAtRef = React.useRef(0);
+  const hydratedFromCacheRef = React.useRef(false);
+  const consecutiveRefreshFailuresRef = React.useRef(0);
+  const lastRefreshFailureAtRef = React.useRef(0);
   useEffect(() => {
     userRef.current = user;
   }, [user]);
 
+  /** Only update the user state when content actually changed (prevents
+   *  realtime-channel churn + memo-breaking re-renders on every refresh). */
+  const setUserIfChanged = React.useCallback((next: UserProfile | null) => {
+    setUser((prev) => {
+      if (prev && next && prev.user_id === next.user_id) {
+        if (
+          prev.name === next.name &&
+          prev.email === next.email &&
+          prev.avatar_url === next.avatar_url &&
+          prev.created_at === next.created_at
+        ) {
+          return prev;
+        }
+      }
+      if (!prev && !next) return prev;
+      return next;
+    });
+  }, []);
+
   // Load User & App Data — only the newest call may apply state (race guard).
   // When a user is already on screen this runs as a BACKGROUND refresh:
   // existing UI stays visible, no skeleton/full-page spinner.
+  //
+  // Startup path: persisted session (local, ~0ms) → snapshot hydration
+  // (localStorage, instant paint) → ONE parallel network batch (stale-while-
+  // revalidate). The old 5-request sequential waterfall is gone.
   const loadData = useCallback(async () => {
     const requestId = ++loadRequestIdRef.current;
     const isStale = () => requestId !== loadRequestIdRef.current;
@@ -118,46 +154,87 @@ export default function App() {
       return;
     }
 
-    isFetchingRef.current = true;
-    if (isBackground) {
-      setIsRefreshing(true);
-    } else {
-      setIsLoading(true);
-      setLoadError(null);
+    // Auto-refresh backoff: after a failed attempt, wait 15s before retrying
+    // so offline flaps never hammer the backend.
+    if (isBackground && consecutiveRefreshFailuresRef.current > 0) {
+      if (Date.now() - lastRefreshFailureAtRef.current < 15_000) return;
     }
 
+    isFetchingRef.current = true;
+
+    const t0 = import.meta.env.DEV ? performance.now() : 0;
+
     try {
-      const currentUser = await DataService.getCurrentUser();
+      // 1) Session restore — local storage read, NO network round trip.
+      const sessionUser = await DataService.restoreSession();
       if (isStale()) return;
-      setUser(currentUser);
 
-      if (currentUser) {
-        // Fetch tasks once; project stats are computed from them (no duplicate query)
-        const fetchedTasks = await DataService.getTasks(currentUser.user_id);
-        if (isStale()) return;
-        const fetchedProjects = await DataService.getProjects(currentUser.user_id, fetchedTasks);
-        if (isStale()) return;
-        setProjects(fetchedProjects);
-        setTasks(fetchedTasks);
-
-        // Adopt the server-side theme preference when available
-        try {
-          const remoteTheme = await DataService.getUserTheme(currentUser.user_id);
-          if (!isStale() && remoteTheme && remoteTheme !== themeRef.current) {
-            themeRef.current = remoteTheme;
-            setTheme(remoteTheme);
-          }
-        } catch {
-          /* settings row may not exist yet — non-fatal */
-        }
-      } else {
+      if (!sessionUser) {
+        // Signed out (or session expired): wipe private data + cached snapshot
+        const prevUid = userRef.current?.user_id;
+        if (prevUid) clearSnapshot(prevUid);
+        setUser(null);
         setProjects([]);
         setTasks([]);
         setSelectedProject(null);
+        hasLoadedOnceRef.current = true;
+        hydratedFromCacheRef.current = false; // fresh SWR cycle on next sign-in
+        return;
+      }
+
+      const uid = sessionUser.user_id;
+
+      // 2) Stale-while-revalidate hydration: paint cached data instantly.
+      const paintedFromCache =
+        !hydratedFromCacheRef.current &&
+        (() => {
+          const snap = loadSnapshot(uid);
+          if (!snap) return false;
+          setUserIfChanged(snap.profile ?? sessionUser);
+          setProjects(snap.projects);
+          setTasks(snap.tasks);
+          lastFetchedAtRef.current = snap.savedAt;
+          setIsLoading(false); // data is on screen — never show a loader again
+          return true;
+        })();
+      hydratedFromCacheRef.current = true;
+      hasLoadedOnceRef.current = true;
+
+      // Loading-mode decision happens NOW (after hydration): a warm start with
+      // usable cache refreshes silently; only a true cold start shows skeletons.
+      if (isBackground || paintedFromCache) {
+        setIsRefreshing(true);
+      } else {
+        setIsLoading(true);
+      }
+      setLoadError(null);
+
+      // 3) Fresh data in ONE parallel batch (projects ∥ tasks ∥ profile ∥ theme)
+      const { profile, projects: freshProjects, tasks: freshTasks, theme } =
+        await DataService.fetchAllData(uid);
+      if (isStale()) return;
+
+      const mergedProfile: UserProfile = { ...sessionUser, ...profile, email: sessionUser.email };
+      setUserIfChanged(mergedProfile);
+      setProjects(freshProjects);
+      setTasks(freshTasks);
+      saveSnapshot(uid, { profile: mergedProfile, projects: freshProjects, tasks: freshTasks });
+
+      // Adopt the server-side theme preference when available
+      if (theme && theme !== themeRef.current) {
+        themeRef.current = theme;
+        setTheme(theme);
+      }
+
+      consecutiveRefreshFailuresRef.current = 0;
+      if (import.meta.env.DEV) {
+        console.info(`[perf] full sync completed in ${(performance.now() - t0).toFixed(0)}ms`);
       }
     } catch {
       if (isStale()) return;
-      if (isBackground) {
+      consecutiveRefreshFailuresRef.current += 1;
+      lastRefreshFailureAtRef.current = Date.now();
+      if (isBackground || hydratedFromCacheRef.current) {
         // Keep the current UI and data — just note the refresh failed.
         console.warn('[TU DU] Background refresh failed — keeping current data.');
       } else {
@@ -173,7 +250,7 @@ export default function App() {
         setIsRefreshing(false);
       }
     }
-  }, []);
+  }, [setUserIfChanged]);
 
   useEffect(() => {
     loadData();
@@ -183,7 +260,10 @@ export default function App() {
         // TOKEN_REFRESHED: session stays valid — no refetch needed.
         // INITIAL_SESSION: the mount effect above already performs the first load.
         if (event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') return;
-        loadData();
+        // Defer to a macrotask: supabase-js holds an internal lock while
+        // dispatching auth events — calling auth/DB methods synchronously in
+        // this callback can deadlock the client and hang loading forever.
+        setTimeout(() => loadData(), 0);
       });
       return () => subscription.unsubscribe();
     }
@@ -191,16 +271,28 @@ export default function App() {
 
   // Smart background refresh on tab return / network recovery.
   // The visible UI is never replaced — data updates in place when actually stale.
+  // Lightweight by design: one parallel batch, silent, no loaders, no reloads.
   useEffect(() => {
     const maybeRefresh = (minAgeMs: number) => {
       if (!userRef.current) return;            // only for signed-in users
       if (isFetchingRef.current) return;       // a load is already in flight
+      if (!navigator.onLine) return;           // offline — wait for 'online'
+      // Backoff after failures: don't hammer a struggling backend
+      if (
+        consecutiveRefreshFailuresRef.current > 0 &&
+        Date.now() - lastRefreshFailureAtRef.current < 15_000
+      ) {
+        return;
+      }
       const age = Date.now() - lastFetchedAtRef.current;
       if (age > minAgeMs) loadData();
     };
 
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') maybeRefresh(60_000);
+      if (document.visibilityState === 'visible') {
+        // Fresh sessions (<45s old) skip validation entirely — instant resume
+        maybeRefresh(45_000);
+      }
     };
     const handleOnline = () => maybeRefresh(30_000);
 
@@ -228,6 +320,7 @@ export default function App() {
     try {
       setIsLoggingOut(true);
       await DataService.signOut();
+      if (userRef.current) clearSnapshot(userRef.current.user_id);
       addToast('info', 'Signed out successfully');
     } catch (err: any) {
       console.error('Sign out failed:', err);
@@ -272,6 +365,17 @@ export default function App() {
     projectsRef.current = projects;
     tasksRef.current = tasks;
   }, [projects, tasks]);
+
+  // Persist a cache snapshot whenever data changes (debounced — one write per
+  // burst of mutations). Guarantees instant paint on next cold start.
+  useEffect(() => {
+    const uid = user?.user_id;
+    if (!uid || isLoading) return;
+    const timer = window.setTimeout(() => {
+      saveSnapshot(uid, { profile: user, projects, tasks });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [user, projects, tasks, isLoading]);
 
   const handleProjectChange = useCallback((payload: any) => {
     const { eventType, new: newRow, old } = payload;
@@ -332,28 +436,64 @@ export default function App() {
   );
 
   // Subscribe while authenticated; stop on logout; never duplicate channels.
+  // Keyed on the user ID STRING (not the object): background refreshes create
+  // new `user` objects — keying on the object would tear down and re-subscribe
+  // the realtime socket after every refresh, dropping events in the gap.
+  const realtimeUid = user?.user_id;
   useEffect(() => {
-    if (!user || !supabase) return;
-    const uid = user.user_id;
+    if (!realtimeUid || !supabase) return;
+    const uid = realtimeUid;
 
-    const channel = supabase
-      .channel(`tudu-realtime-${uid}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'progress_projects', filter: `user_id=eq.${uid}` },
-        handleProjectChange
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'progress_tasks', filter: `user_id=eq.${uid}` },
-        handleTaskChange
-      )
-      .subscribe();
+    let channel: import('@supabase/supabase-js').RealtimeChannel | null = null;
+    let disposed = false;
+    let attempt = 0;
+    let retryTimer: number | undefined;
+
+    const connect = () => {
+      if (disposed) return;
+
+      // Safety: drop any stale channel with the same topic before re-joining
+      if (channel) {
+        supabase.removeChannel(channel);
+        channel = null;
+      }
+
+      // Unique topic per attempt guarantees a fresh subscription even while a
+      // previous leave is still in flight (prevents duplicate listeners).
+      const topic = `tudu-realtime-${uid}${attempt > 0 ? `-r${attempt}` : ''}`;
+      channel = supabase
+        .channel(topic)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'progress_projects', filter: `user_id=eq.${uid}` },
+          handleProjectChange
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'progress_tasks', filter: `user_id=eq.${uid}` },
+          handleTaskChange
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            attempt = 0; // healthy — reset backoff
+          } else if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && !disposed) {
+            attempt += 1;
+            const delay = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
+            console.warn(`[TU DU] Realtime ${status} — reconnecting in ${delay}ms`);
+            window.clearTimeout(retryTimer);
+            retryTimer = window.setTimeout(connect, delay);
+          }
+        });
+    };
+
+    connect();
 
     return () => {
-      supabase.removeChannel(channel);
+      disposed = true;
+      window.clearTimeout(retryTimer);
+      if (channel) supabase.removeChannel(channel);
     };
-  }, [user, handleProjectChange, handleTaskChange]);
+  }, [realtimeUid, handleProjectChange, handleTaskChange]);
 
   // ---------------- PWA update flow ----------------
   const applyingUpdateRef = React.useRef(false);
@@ -374,39 +514,52 @@ export default function App() {
     );
   };
 
-  // Project Actions
-  const handleCreateProject = async (projectData: {
-    title: string;
-    description: string;
-    image_url: string;
-    accent_color: string;
-    is_favorite: boolean;
-  }): Promise<ProgressProject> => {
-    if (!user) throw new Error('You must be signed in.');
-    const created = await DataService.createProject({ user_id: user.user_id, ...projectData });
-    // Insert the returned row locally — no refetch needed
-    setProjects((prev) => [created, ...prev]);
-    // Navigate straight into the new Progress Detail workspace
-    setSelectedProject(created);
-    addToast('success', 'Progress created successfully', `"${created.title}" is ready.`);
-    return created;
-  };
+  // ---------------- Actions (stable identities → memoized rows never
+  // re-render unnecessarily; functional updates → no stale-array races) ----
 
-  const handleUpdateProject = async (projectId: string, updates: Partial<ProgressProject>) => {
-    try {
-      await DataService.updateProject(projectId, updates);
-      setProjects((prev) =>
-        prev.map((p) => (p.id === projectId ? { ...p, ...updates } : p))
-      );
-      if (selectedProject?.id === projectId) {
-        setSelectedProject((prev) => (prev ? { ...prev, ...updates } : null));
+  const openProject = useCallback((proj: ProgressProject) => setSelectedProject(proj), []);
+  const askDeleteTask = useCallback((id: string) => setDeletingTaskId(id), []);
+  const askEditTask = useCallback((task: ProgressTask) => setEditingTask(task), []);
+  const askEditProject = useCallback((project: ProgressProject) => setEditingProject(project), []);
+  const askDeleteProject = useCallback((id: string) => setDeletingProjectId(id), []);
+
+  const handleCreateProject = useCallback(
+    async (projectData: {
+      title: string;
+      description: string;
+      image_url: string;
+      accent_color: string;
+      is_favorite: boolean;
+    }): Promise<ProgressProject> => {
+      const currentUser = userRef.current;
+      if (!currentUser) throw new Error('You must be signed in.');
+      const created = await DataService.createProject({ user_id: currentUser.user_id, ...projectData });
+      // Insert the returned row locally — no refetch needed
+      setProjects((prev) => [created, ...prev]);
+      // Navigate straight into the new Progress Detail workspace
+      setSelectedProject(created);
+      addToast('success', 'Progress created successfully', `"${created.title}" is ready.`);
+      return created;
+    },
+    [addToast]
+  );
+
+  const handleUpdateProject = useCallback(
+    async (projectId: string, updates: Partial<ProgressProject>) => {
+      try {
+        await DataService.updateProject(projectId, updates);
+        setProjects((prev) =>
+          prev.map((p) => (p.id === projectId ? { ...p, ...updates } : p))
+        );
+        setSelectedProject((prev) => (prev && prev.id === projectId ? { ...prev, ...updates } : prev));
+        addToast('success', 'Progress updated');
+      } catch (err: any) {
+        console.error(err);
+        addToast('error', 'Update failed', err?.message);
       }
-      addToast('success', 'Progress updated');
-    } catch (err: any) {
-      console.error(err);
-      addToast('error', 'Update failed', err?.message);
-    }
-  };
+    },
+    [addToast]
+  );
 
   const handleSaveProjectEdit = async (updates: {
     title: string;
@@ -418,16 +571,25 @@ export default function App() {
     if (!editingProject) return;
     const oldImage = editingProject.image_url || '';
 
-    await DataService.updateProject(editingProject.id, updates);
-
-    // Reflect immediately in local state
+    // Optimistic: apply locally first, persist after — modal closes instantly
     setProjects((prev) =>
       prev.map((p) => (p.id === editingProject.id ? { ...p, ...updates } : p))
     );
-    if (selectedProject?.id === editingProject.id) {
-      setSelectedProject((prev) => (prev ? { ...prev, ...updates } : null));
+    setSelectedProject((prev) => (prev && prev.id === editingProject.id ? { ...prev, ...updates } : prev));
+
+    try {
+      await DataService.updateProject(editingProject.id, updates);
+      addToast('success', 'Progress updated');
+    } catch (err: any) {
+      // Rollback on failure
+      setProjects((prev) =>
+        prev.map((p) => (p.id === editingProject.id ? { ...p, ...editingProject } : p))
+      );
+      setSelectedProject((prev) => (prev && prev.id === editingProject.id ? { ...prev, ...editingProject } : prev));
+      console.error(err);
+      addToast('error', 'Update failed', err?.message);
+      return;
     }
-    addToast('success', 'Progress updated');
 
     // Best-effort cleanup of the replaced storage file — only after a successful save
     if (oldImage && oldImage !== updates.image_url && isSupabaseStorageUrl(oldImage)) {
@@ -435,173 +597,224 @@ export default function App() {
     }
   };
 
-  const handleDeleteProject = async (projectId: string) => {
-    try {
-      const target = projects.find((p) => p.id === projectId);
-      await DataService.deleteProject(projectId);
-      // Remove project + its tasks locally — no refetch needed
-      setProjects((prev) => prev.filter((p) => p.id !== projectId));
-      setTasks((prev) => prev.filter((t) => t.project_id !== projectId));
-      // Return to the Progress Dashboard after deletion
-      setSelectedProject(null);
-      addToast('success', 'Progress deleted', target ? `"${target.title}" and its tasks were removed.` : undefined);
-    } catch (err: any) {
-      console.error(err);
-      addToast('error', 'Delete failed', 'Please try again.');
-    }
-  };
-
-  const handleToggleFavorite = async (projectId: string, current: boolean) => {
-    const nextState = !current;
-    // Optimistic update, revert on failure
-    setProjects((prev) =>
-      prev.map((p) => (p.id === projectId ? { ...p, is_favorite: nextState } : p))
-    );
-    if (selectedProject?.id === projectId) {
-      setSelectedProject((prev) => (prev ? { ...prev, is_favorite: nextState } : prev));
-    }
-    try {
-      await DataService.updateProject(projectId, { is_favorite: nextState });
-    } catch {
-      console.error('Favorite update failed');
-      setProjects((prev) =>
-        prev.map((p) => (p.id === projectId ? { ...p, is_favorite: current } : p))
-      );
-      if (selectedProject?.id === projectId) {
-        setSelectedProject((prev) => (prev ? { ...prev, is_favorite: current } : prev));
+  const handleDeleteProject = useCallback(
+    async (projectId: string) => {
+      try {
+        const target = projectsRef.current.find((p) => p.id === projectId);
+        // Optimistic removal — UI reacts instantly, DB delete confirms behind it
+        setProjects((prev) => prev.filter((p) => p.id !== projectId));
+        setTasks((prev) => prev.filter((t) => t.project_id !== projectId));
+        setSelectedProject(null);
+        await DataService.deleteProject(projectId);
+        addToast('success', 'Progress deleted', target ? `"${target.title}" and its tasks were removed.` : undefined);
+      } catch (err: any) {
+        // Rollback: restore from snapshot of refs at failure time via silent refresh
+        console.error(err);
+        loadData();
+        addToast('error', 'Delete failed', 'Please try again.');
       }
-      addToast('error', 'Could not update favorite', 'Please try again.');
-    }
-  };
+    },
+    [addToast, loadData]
+  );
+
+  const handleToggleFavorite = useCallback(
+    async (projectId: string, current: boolean) => {
+      const nextState = !current;
+      // Optimistic update, revert on failure
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, is_favorite: nextState } : p))
+      );
+      setSelectedProject((prev) => (prev && prev.id === projectId ? { ...prev, is_favorite: nextState } : prev));
+      try {
+        await DataService.updateProject(projectId, { is_favorite: nextState });
+      } catch {
+        console.error('Favorite update failed');
+        setProjects((prev) =>
+          prev.map((p) => (p.id === projectId ? { ...p, is_favorite: current } : p))
+        );
+        setSelectedProject((prev) => (prev && prev.id === projectId ? { ...prev, is_favorite: current } : prev));
+        addToast('error', 'Could not update favorite', 'Please try again.');
+      }
+    },
+    [addToast]
+  );
 
   // Task Actions
-  const handleCreateTask = async (taskData: {
-    project_id: string;
-    title: string;
-    description?: string;
-    image_url?: string;
-    is_favorite?: boolean;
-  }): Promise<ProgressTask> => {
-    if (!user) throw new Error('You must be signed in.');
+  const handleCreateTask = useCallback(
+    async (taskData: {
+      project_id: string;
+      title: string;
+      description?: string;
+      image_url?: string;
+      is_favorite?: boolean;
+    }): Promise<ProgressTask> => {
+      const currentUser = userRef.current;
+      if (!currentUser) throw new Error('You must be signed in.');
 
-    // Verify the target project belongs to the authenticated user (RLS is final layer)
-    const targetProject = projects.find((p) => p.id === taskData.project_id);
-    if (!targetProject) {
-      throw new Error('Selected progress was not found.');
-    }
+      // Verify the target project belongs to the authenticated user (RLS is final layer)
+      const targetProject = projectsRef.current.find((p) => p.id === taskData.project_id);
+      if (!targetProject) {
+        throw new Error('Selected progress was not found.');
+      }
 
-    const newTask = await DataService.createTask({
-      project_id: taskData.project_id,
-      user_id: user.user_id,
-      title: taskData.title,
-      description: taskData.description || '',
-      image_url: taskData.image_url || '',
-      is_completed: false,
-      is_favorite: taskData.is_favorite ?? false,
-      position: 0, // server assigns next position
-    });
+      const t0 = import.meta.env.DEV ? performance.now() : 0;
 
-    // Insert the returned row and update stats locally — no refetch
-    const nextTasks = [newTask, ...tasks];
-    setTasks(nextTasks);
-    recomputeProjectStats(taskData.project_id, nextTasks);
-    // Jump into that Progress Detail workspace
-    setSelectedProject((prev) =>
-      prev && prev.id === targetProject.id
-        ? { ...prev, ...targetProject }
-        : { ...targetProject }
-    );
-    addToast('success', 'Task added successfully', `"${newTask.title}" was added to ${targetProject.title}.`);
-    return newTask;
-  };
+      // Optimistic placeholder appears instantly; replaced by the DB row
+      const optimisticId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimisticTask: ProgressTask = {
+        id: optimisticId,
+        project_id: taskData.project_id,
+        user_id: currentUser.user_id,
+        title: taskData.title,
+        description: taskData.description || '',
+        image_url: taskData.image_url || '',
+        is_completed: false,
+        completed_at: null,
+        is_favorite: taskData.is_favorite ?? false,
+        position: Number.MAX_SAFE_INTEGER - 1, // end of list until confirmed
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      const baseTasks = tasksRef.current;
+      const withPlaceholder = [...baseTasks, optimisticTask];
+      setTasks(withPlaceholder);
+      recomputeProjectStats(taskData.project_id, withPlaceholder);
 
-  const handleToggleTaskComplete = async (taskId: string, isCompleted: boolean) => {
-    const target = tasks.find((t) => t.id === taskId);
-    if (!target) return;
+      let newTask: ProgressTask;
+      try {
+        newTask = await DataService.createTask({
+          project_id: taskData.project_id,
+          user_id: currentUser.user_id,
+          title: taskData.title,
+          description: taskData.description || '',
+          image_url: taskData.image_url || '',
+          is_completed: false,
+          is_favorite: taskData.is_favorite ?? false,
+          position: 0, // server assigns next position
+        });
+      } catch (err) {
+        // Rollback the optimistic row + stats
+        const withoutPlaceholder = tasksRef.current.filter((t) => t.id !== optimisticId);
+        setTasks(withoutPlaceholder);
+        recomputeProjectStats(taskData.project_id, withoutPlaceholder);
+        if (import.meta.env.DEV) console.info('[perf] createTask FAILED');
+        throw err;
+      }
 
-    // Optimistic update + instant local stats recompute
-    const nextTasks = tasks.map((t) =>
-      t.id === taskId
-        ? {
-            ...t,
-            is_completed: isCompleted,
-            completed_at: isCompleted ? new Date().toISOString() : null,
-          }
-        : t
-    );
-    setTasks(nextTasks);
-    recomputeProjectStats(target.project_id, nextTasks);
+      // Swap placeholder → real row (idempotent against realtime echo by id)
+      const swapped = tasksRef.current.filter((t) => t.id !== optimisticId);
+      const alreadyEchoed = swapped.some((t) => t.id === newTask.id);
+      const finalTasks = alreadyEchoed
+        ? swapped.map((t) => (t.id === newTask.id ? { ...t, ...newTask } : t))
+        : [newTask, ...swapped];
+      setTasks(finalTasks);
+      recomputeProjectStats(taskData.project_id, finalTasks);
 
-    // Inline pending indicator while Supabase confirms
-    setPendingTaskIds((prev) => new Set(prev).add(taskId));
-    try {
-      await DataService.toggleTaskCompletion(taskId, isCompleted);
-    } catch {
-      console.error('Task completion update failed');
-      // Revert UI to the previous state
-      const reverted = nextTasks.map((t) =>
+      // Jump into that Progress Detail workspace WITHOUT clobbering freshly
+      // recomputed stats (previous code spread a pre-mutation snapshot here).
+      setSelectedProject((prev) =>
+        prev && prev.id === targetProject.id
+          ? { ...prev }
+          : { ...targetProject }
+      );
+      addToast('success', 'Task added successfully', `"${newTask.title}" was added to ${targetProject.title}.`);
+      if (import.meta.env.DEV) {
+        console.info(`[perf] createTask confirmed in ${(performance.now() - t0).toFixed(0)}ms`);
+      }
+      return newTask;
+    },
+    [addToast, recomputeProjectStats]
+  );
+
+  const handleToggleTaskComplete = useCallback(
+    async (taskId: string, isCompleted: boolean) => {
+      const target = tasksRef.current.find((t) => t.id === taskId);
+      if (!target || target.id.startsWith('optimistic-')) return;
+
+      const t0 = import.meta.env.DEV ? performance.now() : 0;
+
+      // Optimistic update + instant local stats recompute
+      const nextTasks = tasksRef.current.map((t) =>
         t.id === taskId
-          ? { ...t, is_completed: !isCompleted, completed_at: target.completed_at ?? null }
+          ? {
+              ...t,
+              is_completed: isCompleted,
+              completed_at: isCompleted ? new Date().toISOString() : null,
+            }
           : t
       );
-      setTasks(reverted);
-      recomputeProjectStats(target.project_id, reverted);
-      addToast('error', 'Could not update task', 'Please try again.');
-    } finally {
-      setPendingTaskIds((prev) => {
-        const next = new Set(prev);
-        next.delete(taskId);
-        return next;
-      });
-    }
-  };
+      setTasks(nextTasks);
+      recomputeProjectStats(target.project_id, nextTasks);
 
-  const handleToggleTaskFavorite = async (taskId: string, current: boolean) => {
-    const next = !current;
-    // Optimistic update, silent success, revert on failure
-    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, is_favorite: next } : t)));
+      // Inline pending indicator while Supabase confirms
+      setPendingTaskIds((prev) => new Set(prev).add(taskId));
+      try {
+        await DataService.toggleTaskCompletion(taskId, isCompleted);
+        if (import.meta.env.DEV) {
+          console.info(`[perf] toggleComplete confirmed in ${(performance.now() - t0).toFixed(0)}ms`);
+        }
+      } catch {
+        console.error('Task completion update failed');
+        // Revert UI to the previous state
+        const reverted = nextTasks.map((t) =>
+          t.id === taskId
+            ? { ...t, is_completed: !isCompleted, completed_at: target.completed_at ?? null }
+            : t
+        );
+        setTasks(reverted);
+        recomputeProjectStats(target.project_id, reverted);
+        addToast('error', 'Could not update task', 'Please try again.');
+      } finally {
+        setPendingTaskIds((prev) => {
+          const next = new Set(prev);
+          next.delete(taskId);
+          return next;
+        });
+      }
+    },
+    [addToast, recomputeProjectStats]
+  );
 
-    try {
-      await DataService.updateTask(taskId, { is_favorite: next });
-    } catch {
-      console.error('Favorite update failed');
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, is_favorite: current } : t)));
-      addToast('error', 'Could not update favorite', 'Please try again.');
-    }
-  };
+  const handleToggleTaskFavorite = useCallback(
+    async (taskId: string, current: boolean) => {
+      const next = !current;
+      // Optimistic update, silent success, revert on failure
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, is_favorite: next } : t)));
+
+      try {
+        await DataService.updateTask(taskId, { is_favorite: next });
+      } catch {
+        console.error('Favorite update failed');
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, is_favorite: current } : t)));
+        addToast('error', 'Could not update favorite', 'Please try again.');
+      }
+    },
+    [addToast]
+  );
 
   const confirmResetProgress = async () => {
-    if (!selectedProject || !user) return;
+    const currentProject = selectedProject;
+    if (!currentProject || !userRef.current) return;
     setShowResetDialog(false);
 
     try {
       setIsResetting(true);
-      await DataService.resetProjectProgress(selectedProject.id, user.user_id);
+      await DataService.resetProjectProgress(currentProject.id, userRef.current.user_id);
       // Update all of this project's tasks locally — no refetch
-      const nextTasks = tasks.map((t) =>
-        t.project_id === selectedProject.id
+      const nextTasks = tasksRef.current.map((t) =>
+        t.project_id === currentProject.id
           ? { ...t, is_completed: false, completed_at: null }
           : t
       );
       setTasks(nextTasks);
-      recomputeProjectStats(selectedProject.id, nextTasks);
+      recomputeProjectStats(currentProject.id, nextTasks);
       addToast('success', 'Progress reset', 'All tasks were marked incomplete. No tasks were deleted.');
     } catch {
       console.error('Reset failed');
+      loadData(); // resync from server on failure
       addToast('error', 'Reset failed', 'Please try again.');
     } finally {
       setIsResetting(false);
-    }
-  };
-
-  const handleUpdateTask = async (taskId: string, updates: Partial<ProgressTask>) => {
-    try {
-      await DataService.updateTask(taskId, updates);
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...updates } : t)));
-      addToast('success', 'Task updated');
-    } catch (err: any) {
-      console.error(err);
-      addToast('error', 'Update failed', err?.message);
     }
   };
 
@@ -616,38 +829,55 @@ export default function App() {
     const oldImage = editingTask.image_url || '';
     const oldProjectId = editingTask.project_id;
 
-    await DataService.updateTask(editingTask.id, updates);
-
-    // Apply locally and recompute stats for BOTH projects when moved — no refetch
-    const nextTasks = tasks.map((t) =>
-      t.id === editingTask.id ? { ...t, ...updates } : t
-    );
-    setTasks(nextTasks);
-    recomputeProjectStats(updates.project_id, nextTasks);
+    // Optimistic apply + stats for BOTH projects when moved
+    const applyEdit = (source: ProgressTask[]) =>
+      source.map((t) => (t.id === editingTask.id ? { ...t, ...updates } : t));
+    const optimisticTasks = applyEdit(tasksRef.current);
+    setTasks(optimisticTasks);
+    recomputeProjectStats(updates.project_id, optimisticTasks);
     if (oldProjectId !== updates.project_id) {
-      recomputeProjectStats(oldProjectId, nextTasks);
+      recomputeProjectStats(oldProjectId, optimisticTasks);
     }
-    addToast('success', 'Task updated');
+
+    try {
+      await DataService.updateTask(editingTask.id, updates);
+      addToast('success', 'Task updated');
+    } catch (err: any) {
+      // Rollback
+      setTasks(tasksRef.current.map((t) => (t.id === editingTask.id ? { ...t, ...editingTask } : t)));
+      recomputeProjectStats(updates.project_id, tasksRef.current);
+      if (oldProjectId !== updates.project_id) recomputeProjectStats(oldProjectId, tasksRef.current);
+      console.error(err);
+      addToast('error', 'Update failed', err?.message);
+      return;
+    }
 
     if (oldImage && oldImage !== updates.image_url && isSupabaseStorageUrl(oldImage)) {
       deleteStorageFileFromUrl(oldImage);
     }
   };
 
-  const handleDeleteTask = async (taskId: string) => {
-    const target = tasks.find((t) => t.id === taskId);
-    try {
-      await DataService.deleteTask(taskId);
-      // Remove locally and recompute the parent project's stats — no refetch
-      const nextTasks = tasks.filter((t) => t.id !== taskId);
+  const handleDeleteTask = useCallback(
+    async (taskId: string) => {
+      const target = tasksRef.current.find((t) => t.id === taskId);
+      if (!target) return;
+      // Optimistic removal + instant stats recompute
+      const originalTasks = tasksRef.current;
+      const nextTasks = originalTasks.filter((t) => t.id !== taskId);
       setTasks(nextTasks);
-      if (target) recomputeProjectStats(target.project_id, nextTasks);
-      addToast('success', 'Task deleted');
-    } catch {
-      console.error('Task delete failed');
-      addToast('error', 'Delete failed', 'Please try again.');
-    }
-  };
+      recomputeProjectStats(target.project_id, nextTasks);
+      try {
+        await DataService.deleteTask(taskId);
+        addToast('success', 'Task deleted');
+      } catch {
+        console.error('Task delete failed');
+        setTasks(originalTasks); // exact rollback
+        recomputeProjectStats(target.project_id, originalTasks);
+        addToast('error', 'Delete failed', 'Please try again.');
+      }
+    },
+    [addToast, recomputeProjectStats]
+  );
 
   // ---------- Render ----------
 
@@ -768,11 +998,11 @@ export default function App() {
             onToggleTaskComplete={handleToggleTaskComplete}
             onToggleTaskFavorite={handleToggleTaskFavorite}
             onAddTask={handleCreateTask}
-            onDeleteTask={(id) => setDeletingTaskId(id)}
-            onEditTask={(task) => setEditingTask(task)}
+            onDeleteTask={askDeleteTask}
+            onEditTask={askEditTask}
             onToggleFavorite={handleToggleFavorite}
-            onEditProject={(project) => setEditingProject(project)}
-            onDeleteProject={(id) => setDeletingProjectId(id)}
+            onEditProject={askEditProject}
+            onDeleteProject={askDeleteProject}
             onRequestReset={() => setShowResetDialog(true)}
           />
         ) : (
@@ -785,7 +1015,7 @@ export default function App() {
                 error={loadError}
                 onRetry={loadData}
                 searchSignal={searchSignal}
-                onOpenProject={(proj) => setSelectedProject(proj)}
+                onOpenProject={openProject}
                 onToggleFavorite={handleToggleFavorite}
                 onNavigateCreate={() => setActiveTab('create')}
               />

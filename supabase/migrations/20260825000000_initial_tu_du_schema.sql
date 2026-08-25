@@ -64,6 +64,11 @@ create index if not exists idx_tasks_project on public.progress_tasks (project_i
 create index if not exists idx_profiles_user on public.profiles (user_id);
 create index if not exists idx_settings_user on public.user_settings (user_id);
 
+-- Composite indexes matching the app's exact read patterns
+create index if not exists idx_tasks_user_order on public.progress_tasks (user_id, position, created_at desc);
+create index if not exists idx_tasks_project_position on public.progress_tasks (project_id, position);
+create index if not exists idx_projects_user_created on public.progress_projects (user_id, created_at desc);
+
 -- ============================================================
 -- TRIGGERS
 -- ============================================================
