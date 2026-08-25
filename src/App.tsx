@@ -14,7 +14,7 @@ import { CreateView } from './views/CreateView';
 import { ProjectDetailView } from './views/ProjectDetailView';
 import { AuthModal } from './views/AuthModal';
 import { ProfileView } from './views/ProfileView';
-import { DataService, isSupabaseConfigured, supabase } from './lib/supabase';
+import { DataService, isSupabaseConfigured, supabase, detectDeadlineSchema } from './lib/supabase';
 import { deleteStorageFileFromUrl, isSupabaseStorageUrl } from './lib/storage';
 import { clearSnapshot, hasAnySnapshot, loadSnapshot, saveSnapshot } from './lib/cache';
 import { useTaskTimer } from './hooks/useTaskTimer';
@@ -190,6 +190,10 @@ export default function App() {
       }
 
       const uid = sessionUser.user_id;
+
+      // One-time schema probe: are the reminder columns live? Runs alongside
+      // the fetch so mutations always know whether deadline fields are safe.
+      void detectDeadlineSchema();
 
       // 2) Stale-while-revalidate hydration: paint cached data instantly.
       const paintedFromCache =

@@ -29,6 +29,64 @@ if (import.meta.env.PROD && !isSupabaseConfigured()) {
   );
 }
 
+// ============================================================
+// Deadline-schema capability probe (Phase 11 resilience)
+//
+// The reminder columns (`due_datetime`, `notified`, `snooze_until`) are added
+// by supabase/migrations/add_due_timers.sql. If that SQL has not been run yet,
+// ANY insert/update mentioning those columns fails with PG 42703 — which used
+// to break ALL task creation. We therefore probe ONCE per session:
+//   • columns present  → full reminder features
+//   • columns missing  → deadline fields are stripped from every payload so
+//                        task CRUD keeps working; reminders auto-activate on
+//                        the next load after the migration runs.
+// ============================================================
+
+let deadlineSchemaReady: boolean | null = null; // null = not probed yet
+
+/** True when the DB supports deadline columns. Defaults true pre-probe. */
+export function isDeadlineSchemaReady(): boolean {
+  return deadlineSchemaReady !== false;
+}
+
+/**
+ * Probe the live schema for `due_datetime`. Safe to call repeatedly —
+ * the result is cached for the whole page session.
+ */
+export async function detectDeadlineSchema(): Promise<boolean> {
+  const client = requireClient();
+  if (!client) return false;
+
+  try {
+    const { error } = await client
+      .from('progress_tasks')
+      .select('id,due_datetime,notified,snooze_until')
+      .limit(1);
+    deadlineSchemaReady = !error;
+    if (error) {
+      console.warn(
+        '[TU DU] Reminder columns unavailable — running in degraded mode. ' +
+          'Run supabase/migrations/add_due_timers.sql in the Supabase SQL Editor to enable alarms.'
+      );
+    }
+    return deadlineSchemaReady;
+  } catch {
+    // Network/auth hiccup: assume ready so we don't silently strip features,
+    // individual failing mutations still roll back gracefully.
+    deadlineSchemaReady = deadlineSchemaReady ?? true;
+    return deadlineSchemaReady;
+  }
+}
+
+/** Remove deadline fields from a payload when the schema lacks them. */
+function stripDeadlineFields<T extends Record<string, unknown>>(payload: T): Record<string, unknown> {
+  const clone: Record<string, unknown> = { ...payload };
+  delete clone.due_datetime;
+  delete clone.notified;
+  delete clone.snooze_until;
+  return clone;
+}
+
 function requireClient(): SupabaseClient {
   if (!supabase) {
     throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
@@ -344,22 +402,45 @@ export class DataService {
     }
 
     const now = new Date().toISOString();
-    const { data, error } = await client
+    const insertPayload: Record<string, unknown> = {
+      project_id: taskData.project_id,
+      user_id: taskData.user_id,
+      title: taskData.title,
+      description: taskData.description || '',
+      image_url: taskData.image_url || '',
+      is_completed: taskData.is_completed,
+      completed_at: taskData.is_completed ? now : null,
+      is_favorite: taskData.is_favorite ?? false,
+      position,
+      due_datetime: taskData.due_datetime || null,
+    };
+    // Pre-migration DBs reject unknown columns — omit deadline fields instead
+    // of failing the whole create.
+    if (!isDeadlineSchemaReady()) stripDeadlineFields(insertPayload);
+
+    let result = await client
       .from('progress_tasks')
-      .insert({
-        project_id: taskData.project_id,
-        user_id: taskData.user_id,
-        title: taskData.title,
-        description: taskData.description || '',
-        image_url: taskData.image_url || '',
-        is_completed: taskData.is_completed,
-        completed_at: taskData.is_completed ? now : null,
-        is_favorite: taskData.is_favorite ?? false,
-        position,
-        due_datetime: taskData.due_datetime || null,
-      })
+      .insert(insertPayload)
       .select()
       .single();
+
+    // Self-healing: if the deadline columns vanished/never existed and we
+    // raced ahead of the probe, latch degraded mode and retry without them.
+    if (
+      result.error &&
+      /\b(42703|PGRST204)\b|due_datetime|snooze_until|notified/i.test(
+        `${result.error.code ?? ''} ${result.error.message}`
+      )
+    ) {
+      deadlineSchemaReady = false;
+      console.warn('[TU DU] Deadline columns missing on insert — retried in degraded mode.');
+      result = await client
+        .from('progress_tasks')
+        .insert(stripDeadlineFields(insertPayload))
+        .select()
+        .single();
+    }
+    const { data, error } = result;
     if (error) throw error;
 
     touchProject(client, taskData.project_id);
@@ -383,9 +464,11 @@ export class DataService {
 
   static async updateTask(taskId: string, updates: Partial<ProgressTask>): Promise<void> {
     const client = requireClient();
+    let patch = taskPatch(updates);
+    if (!isDeadlineSchemaReady()) patch = stripDeadlineFields(patch) as typeof patch;
     const { data, error } = await client
       .from('progress_tasks')
-      .update(taskPatch(updates))
+      .update(patch)
       .eq('id', taskId)
       .select('project_id')
       .single();
@@ -396,6 +479,7 @@ export class DataService {
 
   /** Latch the overdue-alert flag so a deadline never notifies twice. */
   static async setTaskNotified(taskId: string, notified: boolean = true): Promise<void> {
+    if (!isDeadlineSchemaReady()) return; // degraded mode — nothing to latch
     const client = requireClient();
     const { error } = await client
       .from('progress_tasks')
@@ -409,6 +493,7 @@ export class DataService {
    * alert (notified=false) so the scheduler fires again when the snooze ends.
    */
   static async snoozeTask(taskId: string, minutes: number): Promise<void> {
+    if (!isDeadlineSchemaReady()) return; // degraded mode — no alarms to snooze
     const client = requireClient();
     const { error } = await client
       .from('progress_tasks')

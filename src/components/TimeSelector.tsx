@@ -21,6 +21,7 @@ import {
   toDatetimeLocalValue,
 } from '../lib/dueTime';
 import { microBuzz } from '../lib/notificationManager';
+import { isDeadlineSchemaReady } from '../lib/supabase';
 
 interface TimeSelectorProps {
   /** ISO string of the selected deadline, or null/'' when unset. */
@@ -250,6 +251,15 @@ export const TimeSelector: React.FC<TimeSelectorProps> = ({ value, onChange }) =
         <p className="text-[11px] font-bold text-orange-600 dark:text-orange-400">
           <CalendarClock className="w-3 h-3 inline -mt-0.5 mr-1" />
           Reminder: {formatDueAbsolute(value)}
+        </p>
+      )}
+
+      {/* Schema hint: reminders activate after the migration runs */}
+      {!isDeadlineSchemaReady() && (
+        <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
+          ⚠️ Reminders need a one-time database update — run{' '}
+          <code className="font-mono">supabase/migrations/add_due_timers.sql</code> in the Supabase
+          SQL Editor. Tasks save normally in the meantime; the alarm activates automatically after.
         </p>
       )}
     </div>
