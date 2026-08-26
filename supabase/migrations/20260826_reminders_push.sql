@@ -110,6 +110,7 @@ grant select, insert, update, delete on public.push_subscriptions to authenticat
 -- 6) Helper function: create_reminder_for_task
 --    Creates a reminder row when a task's due_datetime is set.
 --    Called from client after task create/update, or can be called from DB trigger.
+--    SECURITY DEFINER with explicit ownership verification.
 -- ------------------------------------------------------------
 create or replace function public.create_reminder_for_task(
   p_task_id uuid,
@@ -123,13 +124,33 @@ declare
   v_user_id uuid;
   v_project_id uuid;
   v_reminder_id uuid;
+  v_caller_uid uuid := auth.uid();
 begin
+  -- Verify authenticated caller
+  if v_caller_uid is null then
+    raise exception 'Unauthenticated';
+  end if;
+
+  -- Fetch task and verify ownership
   select user_id, project_id into v_user_id, v_project_id
   from public.progress_tasks
   where id = p_task_id;
 
   if not found then
     raise exception 'Task not found: %', p_task_id;
+  end if;
+
+  -- Verify the task belongs to the caller
+  if v_user_id <> v_caller_uid then
+    raise exception 'Forbidden: task does not belong to current user';
+  end if;
+
+  -- Verify the task's project also belongs to the caller
+  if not exists (
+    select 1 from public.progress_projects
+    where id = v_project_id and user_id = v_caller_uid
+  ) then
+    raise exception 'Forbidden: project does not belong to current user';
   end if;
 
   -- Idempotent: if a reminder already exists for this task at this instant, return it
@@ -160,19 +181,20 @@ $$;
 --      $$
 --      select net.http_post(
 --        url := 'https://<PROJECT_REF>.supabase.co/functions/v1/send-reminders',
---        headers := '{"Content-Type": "application/json", "Authorization": "Bearer <SERVICE_ROLE_KEY>"}'::jsonb,
+--        headers := '{"Content-Type": "application/json", "x-cron-secret": "<CRON_SECRET>"}'::jsonb,
 --        body := '{}'::jsonb
 --      );
 --      $$
 --    );
---    Replace <PROJECT_REF> and <SERVICE_ROLE_KEY> with actual values.
---    The SERVICE_ROLE_KEY should be the same one used in create-owner script.
---    Alternatively, set a CRON_SECRET in Supabase Vault and have the function check it.
+--    Replace <PROJECT_REF> with your Supabase project reference.
+--    The CRON_SECRET must match the secret set in Supabase Edge Function secrets.
+--    Do NOT use a service-role key in the cron request.
 -- ------------------------------------------------------------
 
 -- ------------------------------------------------------------
 -- 8) Cleanup function: mark reminders cancelled when task completed/deleted
 --    (Called from client or can be a DB trigger; here's the function for client use)
+--    SECURITY DEFINER with explicit ownership verification.
 -- ------------------------------------------------------------
 create or replace function public.cancel_reminders_for_task(p_task_id uuid)
 returns void
@@ -180,7 +202,29 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_user_id uuid;
+  v_caller_uid uuid := auth.uid();
 begin
+  -- Verify authenticated caller
+  if v_caller_uid is null then
+    raise exception 'Unauthenticated';
+  end if;
+
+  -- Fetch task and verify ownership
+  select user_id into v_user_id
+  from public.progress_tasks
+  where id = p_task_id;
+
+  if not found then
+    raise exception 'Task not found: %', p_task_id;
+  end if;
+
+  -- Verify the task belongs to the caller
+  if v_user_id <> v_caller_uid then
+    raise exception 'Forbidden: task does not belong to current user';
+  end if;
+
   update public.task_reminders
   set status = 'cancelled', updated_at = now()
   where task_id = p_task_id and status = 'pending';
@@ -193,7 +237,29 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_project_user_id uuid;
+  v_caller_uid uuid := auth.uid();
 begin
+  -- Verify authenticated caller
+  if v_caller_uid is null then
+    raise exception 'Unauthenticated';
+  end if;
+
+  -- Fetch project and verify ownership
+  select user_id into v_project_user_id
+  from public.progress_projects
+  where id = p_project_id;
+
+  if not found then
+    raise exception 'Project not found: %', p_project_id;
+  end if;
+
+  -- Verify the project belongs to the caller
+  if v_project_user_id <> v_caller_uid then
+    raise exception 'Forbidden: project does not belong to current user';
+  end if;
+
   update public.task_reminders
   set status = 'cancelled', updated_at = now()
   where project_id = p_project_id and status = 'pending';
