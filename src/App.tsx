@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, RefreshCw, AlertCircle, WifiOff } from 'lucide-react';
 import { Header } from './components/Header';
 import { BottomNavigation } from './components/BottomNavigation';
 import { ToastContainer } from './components/Toast';
@@ -24,6 +24,12 @@ import { NotificationPermissionBanner } from './components/NotificationPermissio
 import { subscribeToPush, getPushSubscription, unsubscribeFromPush } from './lib/notificationManager';
 import { ProgressProject, ProgressTask, UserProfile, ViewTab, ThemeMode, ToastMessage, TaskReminder, PushSubscription } from './types';
 
+// Auth state machine
+type AuthStatus = 'unknown' | 'authenticated' | 'unauthenticated';
+
+const STARTUP_TIMEOUT_MS = 15_000;
+const MAX_STARTUP_RETRIES = 3;
+
 export default function App() {
   // Theme State (localStorage + user_settings persistence)
   const [theme, setTheme] = useState<ThemeMode>(() => {
@@ -37,18 +43,24 @@ export default function App() {
   const [selectedProject, setSelectedProject] = useState<ProgressProject | null>(null);
   const [searchSignal, setSearchSignal] = useState(0);
 
+  // Auth State Machine
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('unknown');
+
   // Data State
   const [user, setUser] = useState<UserProfile | null>(null);
   const [projects, setProjects] = useState<ProgressProject[]>([]);
   const [tasks, setTasks] = useState<ProgressTask[]>([]);
-  // Boot loader is skipped entirely when a cache snapshot exists on this
-  // device (synchronous probe) — cached data paints instead, zero flash.
   const [initialHasCache] = useState<boolean>(() => hasAnySnapshot());
   const [isLoading, setIsLoading] = useState<boolean>(() => !initialHasCache);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [updateReady, setUpdateReady] = useState<boolean>(false);
+
+  // Startup tracking
+  const [startupRetries, setStartupRetries] = useState(0);
+  const startupTimeoutRef = useRef<number | null>(null);
+  const startupCompleteRef = useRef(false);
 
   // Modals & Dialogs
   const [isAuthOpen, setIsAuthOpen] = useState(false);
@@ -67,7 +79,6 @@ export default function App() {
   const pushSubscribedRef = useRef(false);
 
   // Reminder engine: FIFO queue of task ids whose deadline expired.
-  // The first entry is the alert currently on screen.
   const [overdueQueue, setOverdueQueue] = useState<string[]>([]);
 
   // Apply Theme class to <html> element
@@ -118,6 +129,27 @@ export default function App() {
 
   // Tracks the newest loadData invocation for the race guard
   const loadRequestIdRef = React.useRef(0);
+
+  // Startup timeout handling
+  const clearStartupTimeout = useCallback(() => {
+    if (startupTimeoutRef.current) {
+      window.clearTimeout(startupTimeoutRef.current);
+      startupTimeoutRef.current = null;
+    }
+  }, []);
+
+  const handleStartupTimeout = useCallback(() => {
+    if (startupCompleteRef.current) return;
+    console.warn('[TU DU] Startup timeout reached');
+    setLoadError('Startup timed out. Please check your connection and try again.');
+    setIsLoading(false);
+    setAuthStatus('unauthenticated');
+  }, []);
+
+  useEffect(() => {
+    startupTimeoutRef.current = window.setTimeout(handleStartupTimeout, STARTUP_TIMEOUT_MS);
+    return () => clearStartupTimeout();
+  }, [handleStartupTimeout, clearStartupTimeout]);
   // Loading-mode separation: initial load (may show skeletons/full-screen)
   // vs background refresh (never blocks the visible UI).
   const hasLoadedOnceRef = React.useRef(false);
@@ -163,8 +195,11 @@ export default function App() {
     const isBackground = hasLoadedOnceRef.current && Boolean(userRef.current);
 
     if (!isSupabaseConfigured() || !supabase) {
+      setAuthStatus('unauthenticated');
       setUser(null);
       setIsLoading(false);
+      clearStartupTimeout();
+      startupCompleteRef.current = true;
       return;
     }
 
@@ -184,22 +219,25 @@ export default function App() {
       if (isStale()) return;
 
       if (!sessionUser) {
-        // Signed out (or session expired): wipe private data + cached snapshot
+        // No valid persisted session
         const prevUid = userRef.current?.user_id;
         if (prevUid) clearSnapshot(prevUid);
+        setAuthStatus('unauthenticated');
         setUser(null);
         setProjects([]);
         setTasks([]);
         setSelectedProject(null);
         hasLoadedOnceRef.current = true;
-        hydratedFromCacheRef.current = false; // fresh SWR cycle on next sign-in
+        hydratedFromCacheRef.current = false;
+        setIsLoading(false);
+        clearStartupTimeout();
+        startupCompleteRef.current = true;
         return;
       }
 
       const uid = sessionUser.user_id;
 
-      // One-time schema probe: are the reminder columns live? Runs alongside
-      // the fetch so mutations always know whether deadline fields are safe.
+      // One-time schema probe: are the reminder columns live?
       void detectDeadlineSchema();
 
       // 2) Stale-while-revalidate hydration: paint cached data instantly.
@@ -218,8 +256,8 @@ export default function App() {
       hydratedFromCacheRef.current = true;
       hasLoadedOnceRef.current = true;
 
-      // Loading-mode decision happens NOW (after hydration): a warm start with
-      // usable cache refreshes silently; only a true cold start shows skeletons.
+      // Loading-mode decision: warm start with usable cache refreshes silently;
+      // only a true cold start shows skeletons.
       if (isBackground || paintedFromCache) {
         setIsRefreshing(true);
       } else {
@@ -270,20 +308,32 @@ export default function App() {
         }
       }
 
+      setAuthStatus('authenticated');
       consecutiveRefreshFailuresRef.current = 0;
       if (import.meta.env.DEV) {
         console.info(`[perf] full sync completed in ${(performance.now() - t0).toFixed(0)}ms`);
       }
-    } catch {
+    } catch (err) {
       if (isStale()) return;
       consecutiveRefreshFailuresRef.current += 1;
       lastRefreshFailureAtRef.current = Date.now();
       if (isBackground || hydratedFromCacheRef.current) {
         // Keep the current UI and data — just note the refresh failed.
         console.warn('[TU DU] Background refresh failed — keeping current data.');
+        // Don't change auth status on background failure
       } else {
-        // Never surface raw database errors
-        setLoadError('Unable to load your progress. Please try again.');
+        // Cold start failure - distinguish network error from auth failure
+        const isNetworkError = err instanceof TypeError && err.message.includes('NetworkError') ||
+                              (err as any)?.message?.includes('NetworkError') ||
+                              (err as any)?.code === 'NETWORK_ERROR' ||
+                              !navigator.onLine;
+        if (isNetworkError) {
+          setLoadError('Network unavailable. Using cached data. Will retry when online.');
+          // Keep auth status as unknown - don't assume logged out
+        } else {
+          setLoadError('Unable to load your progress. Please try again.');
+          setAuthStatus('unauthenticated');
+        }
       }
     } finally {
       if (!isStale()) {
@@ -292,26 +342,47 @@ export default function App() {
         isFetchingRef.current = false;
         setIsLoading(false);
         setIsRefreshing(false);
+        if (!startupCompleteRef.current) {
+          clearStartupTimeout();
+          startupCompleteRef.current = true;
+        }
       }
     }
-  }, [setUserIfChanged]);
+  }, [setUserIfChanged, clearStartupTimeout]);
 
+  // Initial load + auth listener (setup listener BEFORE calling loadData to avoid race)
   useEffect(() => {
+    if (!isSupabaseConfigured() || !supabase) {
+      setAuthStatus('unauthenticated');
+      setIsLoading(false);
+      clearStartupTimeout();
+      startupCompleteRef.current = true;
+      return;
+    }
+
+    // Set up auth listener first
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      // TOKEN_REFRESHED: session stays valid — no refetch needed.
+      // INITIAL_SESSION: handled by initial loadData call.
+      if (event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') return;
+      // SIGNED_OUT: clear auth state
+      if (event === 'SIGNED_OUT') {
+        setAuthStatus('unauthenticated');
+        setUser(null);
+        setProjects([]);
+        setTasks([]);
+        setSelectedProject(null);
+        return;
+      }
+      // SIGNED_IN, USER_UPDATED: reload data
+      setTimeout(() => loadData(), 0);
+    });
+
+    // Then trigger initial load
     loadData();
 
-    if (isSupabaseConfigured() && supabase) {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-        // TOKEN_REFRESHED: session stays valid — no refetch needed.
-        // INITIAL_SESSION: the mount effect above already performs the first load.
-        if (event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') return;
-        // Defer to a macrotask: supabase-js holds an internal lock while
-        // dispatching auth events — calling auth/DB methods synchronously in
-        // this callback can deadlock the client and hang loading forever.
-        setTimeout(() => loadData(), 0);
-      });
-      return () => subscription.unsubscribe();
-    }
-  }, [loadData]);
+    return () => subscription.unsubscribe();
+  }, [loadData, clearStartupTimeout]);
 
   // Smart background refresh on tab return / network recovery.
   // The visible UI is never replaced — data updates in place when actually stale.
@@ -1087,12 +1158,50 @@ export default function App() {
   // ---------- Render ----------
 
   // Loading screen while session restores
-  if (isLoading && !user) {
+  if (isLoading && authStatus === 'unknown') {
     return <LoadingState fullScreen label="Loading TU DU..." description="Restoring your session" />;
   }
 
+  // Startup timeout / error recovery
+  if (authStatus === 'unknown' && loadError) {
+    return (
+      <div className="min-h-screen flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)]">
+        <div className="flex justify-end px-6 pt-6">
+          <Header
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            user={null}
+            onOpenAuth={() => setIsAuthOpen(true)}
+            onOpenProfile={() => setIsAuthOpen(true)}
+          />
+        </div>
+
+        <main className="flex-1 flex items-center justify-center px-4 pb-24">
+          <div className="w-full max-w-sm text-center space-y-6 glass-panel border border-amber-500/40 dark:border-amber-500/40 rounded-3xl shadow-2xl p-8">
+            <AlertCircle className="mx-auto w-14 h-14 text-amber-500" />
+            <div>
+              <h1 className="text-3xl font-black tracking-tight text-slate-900 dark:text-white">
+                Startup Timeout
+              </h1>
+              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-2 leading-relaxed">
+                {loadError}
+              </p>
+            </div>
+            <Button fullWidth size="lg" onClick={() => {
+              setLoadError(null);
+              setStartupRetries((r) => r + 1);
+              loadData();
+            }}>
+              Retry
+            </Button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   // Protected route gate — real Supabase auth required for app content
-  if (!user) {
+  if (authStatus === 'unauthenticated' || !user) {
     return (
       <div className="min-h-screen flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)]">
         <div className="flex justify-end px-6 pt-6">
