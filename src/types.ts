@@ -71,6 +71,31 @@ export type SortOption =
 
 export type FilterStatus = 'all' | 'in_progress' | 'completed' | 'favorites';
 
+export interface TaskReminder {
+  id: string;
+  task_id: string;
+  user_id: string;
+  project_id: string;
+  remind_at: string;
+  status: 'pending' | 'delivered' | 'cancelled';
+  delivered_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PushSubscription {
+  id: string;
+  user_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  user_agent?: string | null;
+  device_label?: string | null;
+  last_used_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ToastMessage {
   id: string;
   type: 'success' | 'error' | 'info';

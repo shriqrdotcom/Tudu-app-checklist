@@ -5,9 +5,14 @@
  * - Supabase & all cross-origin requests: NEVER cached — always network.
  * - Updates: a new worker WAITS until the user accepts the in-app update
  *   prompt (SKIP_WAITING message). No automatic reloads, no update loops.
+ * - Push notifications: handles 'push' event to show notifications with deep-linking.
  */
 const VERSION = 'v2';
 const CACHE = `tu-du-${VERSION}`;
+
+// VAPID public key (injected at build time via Vite define)
+// This is PUBLIC info — safe to embed in the service worker.
+const VAPID_PUBLIC_KEY = '__VAPID_PUBLIC_KEY__';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -84,25 +89,88 @@ self.addEventListener('message', (event) => {
 });
 
 // ------------------------------------------------------------
-// Reminder notifications: tapping focuses the existing app window
-// (or opens a fresh one) so the user lands on the overdue task's app.
+// Push notifications: show OS notification with deep-link data
+// ------------------------------------------------------------
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+
+  let payload;
+  try {
+    payload = event.data.json();
+  } catch {
+    return;
+  }
+
+  const { taskId, projectId, title } = payload || {};
+  const notificationTitle = 'TU DU ★ Alert';
+  const notificationBody = `"${title}" is due now.`;
+  
+  const tag = `tudu-reminder-${taskId}`;
+  
+  const notificationOptions = {
+    body: notificationBody,
+    tag,
+    icon: '/brand/icons/icon-192.png',
+    badge: '/brand/icons/icon-192.png',
+    requireInteraction: true,
+    data: { taskId, projectId },
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(notificationTitle, notificationOptions)
+  );
+});
+
+// ------------------------------------------------------------
+// Notification click: deep-link to the relevant task/project
 // ------------------------------------------------------------
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const { taskId, projectId } = event.notification.data || {};
+
   event.waitUntil(
     (async () => {
+      // Try to focus existing TU DU window
       const clientList = await self.clients.matchAll({
         type: 'window',
         includeUncontrolled: true,
       });
-      // Focus the most recent TU DU window if one exists
+      
       for (const client of clientList) {
         if ('focus' in client) {
+          // If we have task/project IDs, postMessage to navigate
+          if (taskId || projectId) {
+            client.postMessage({
+              type: 'TUDU_OPEN_TASK',
+              taskId,
+              projectId,
+            });
+          }
           await client.focus();
           return;
         }
       }
-      await self.clients.openWindow('/');
+
+      // No existing window — open with deep-link query params
+      let url = '/';
+      if (taskId || projectId) {
+        const params = new URLSearchParams();
+        if (taskId) params.set('task', taskId);
+        if (projectId) params.set('project', projectId);
+        url = `/?${params.toString()}`;
+      }
+      await self.clients.openWindow(url);
     })()
   );
+});
+
+// ------------------------------------------------------------
+// Push subscription change: best-effort re-subscribe hint
+// (App handles actual re-subscription on next load)
+// ------------------------------------------------------------
+self.addEventListener('pushsubscriptionchange', (event) => {
+  // The subscription has expired or been revoked.
+  // We can't easily re-subscribe here without the app's VAPID key.
+  // The app will detect this on next load and re-subscribe.
+  console.log('[TU DU] Push subscription changed:', event);
 });

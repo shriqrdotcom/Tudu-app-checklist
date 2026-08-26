@@ -11,7 +11,7 @@
  * notifications/haptics are enhancements, never a crash path.
  */
 
-import { ProgressTask } from '../types';
+import { ProgressTask, PushSubscription } from '../types';
 
 // ============================================================
 // HAPTIC FEEDBACK (Vibration API)
@@ -100,11 +100,130 @@ export function dismissPermissionBanner(): void {
 }
 
 // ============================================================
-// SYSTEM NOTIFICATIONS (via Service Worker registration)
+// PUSH SUBSCRIPTION HANDLING
 // ============================================================
 
 const APP_ICON = '/brand/icons/icon-192.png';
 const APP_BADGE = '/brand/icons/icon-192.png';
+
+/** Convert base64 string to Uint8Array for VAPID key */
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+/** Get the current push subscription for this device/user */
+export async function getPushSubscription(): Promise<PushSubscription | null> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return null;
+    const key = sub.getKey('p256dh');
+    const auth = sub.getKey('auth');
+    if (!key || !auth) return null;
+    return {
+      id: '',
+      user_id: '',
+      endpoint: sub.endpoint,
+      p256dh: btoa(String.fromCharCode(...new Uint8Array(key))),
+      auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
+      user_agent: navigator.userAgent,
+      device_label: undefined,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Subscribe to push notifications and store in Supabase via callback */
+export async function subscribeToPush(
+  vapidPublicKey: string,
+  onSuccess: (sub: PushSubscription) => Promise<void>
+): Promise<PushSubscription | null> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+  if (Notification.permission !== 'granted') return null;
+
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      // Already subscribed — return existing
+      const key = existing.getKey('p256dh');
+      const auth = existing.getKey('auth');
+      if (key && auth) {
+        return {
+          id: '',
+          user_id: '',
+          endpoint: existing.endpoint,
+          p256dh: btoa(String.fromCharCode(...new Uint8Array(key))),
+          auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
+          user_agent: navigator.userAgent,
+          device_label: undefined,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+      }
+    }
+
+    const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey,
+    });
+
+    const key = sub.getKey('p256dh');
+    const auth = sub.getKey('auth');
+    if (!key || !auth) throw new Error('Failed to get push keys');
+
+    const pushSub: PushSubscription = {
+      id: '',
+      user_id: '',
+      endpoint: sub.endpoint,
+      p256dh: btoa(String.fromCharCode(...new Uint8Array(key))),
+      auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
+      user_agent: navigator.userAgent,
+      device_label: undefined,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    await onSuccess(pushSub);
+    return pushSub;
+  } catch (err) {
+    console.warn('[TU DU] Push subscription failed:', err);
+    return null;
+  }
+}
+
+/** Unsubscribe from push notifications */
+export async function unsubscribeFromPush(
+  endpoint: string,
+  onSuccess: () => Promise<void>
+): Promise<void> {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub && sub.endpoint === endpoint) {
+      await sub.unsubscribe();
+    }
+    await onSuccess();
+  } catch (err) {
+    console.warn('[TU DU] Push unsubscription failed:', err);
+  }
+}
+
+// ============================================================
+// SYSTEM NOTIFICATIONS (via Service Worker registration)
+// ============================================================
 
 export interface OverdueNotificationInput {
   task: Pick<ProgressTask, 'id' | 'title'>;

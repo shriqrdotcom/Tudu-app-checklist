@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CheckCircle2 } from 'lucide-react';
 import { Header } from './components/Header';
 import { BottomNavigation } from './components/BottomNavigation';
@@ -21,7 +21,8 @@ import { usePrecisionTimer } from './hooks/usePrecisionTimer';
 import { useContinuousAlarm } from './hooks/useContinuousAlarm';
 import { ActiveAlarmModal } from './components/ActiveAlarmModal';
 import { NotificationPermissionBanner } from './components/NotificationPermissionBanner';
-import { ProgressProject, ProgressTask, UserProfile, ViewTab, ThemeMode, ToastMessage } from './types';
+import { subscribeToPush, getPushSubscription, unsubscribeFromPush } from './lib/notificationManager';
+import { ProgressProject, ProgressTask, UserProfile, ViewTab, ThemeMode, ToastMessage, TaskReminder, PushSubscription } from './types';
 
 export default function App() {
   // Theme State (localStorage + user_settings persistence)
@@ -59,6 +60,11 @@ export default function App() {
   const [isResetting, setIsResetting] = useState(false);
   const [pendingTaskIds, setPendingTaskIds] = useState<Set<string>>(new Set());
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Reminders & Push
+  const [reminders, setReminders] = useState<TaskReminder[]>([]);
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const pushSubscribedRef = useRef(false);
 
   // Reminder engine: FIFO queue of task ids whose deadline expired.
   // The first entry is the alert currently on screen.
@@ -221,10 +227,20 @@ export default function App() {
       }
       setLoadError(null);
 
-      // 3) Fresh data in ONE parallel batch (projects ∥ tasks ∥ profile ∥ theme)
+      // 3) Fresh data in ONE parallel batch (projects ∥ tasks ∥ profile ∥ theme ∥ reminders)
       const { profile, projects: freshProjects, tasks: freshTasks, theme } =
         await DataService.fetchAllData(uid);
       if (isStale()) return;
+
+      // 4) Fetch reminders for this user
+      let userReminders: TaskReminder[] = [];
+      try {
+        userReminders = await DataService.getAllUserReminders(uid);
+      } catch {
+        // Non-fatal; reminders will load on next refresh
+      }
+      if (isStale()) return;
+      setReminders(userReminders);
 
       const mergedProfile: UserProfile = { ...sessionUser, ...profile, email: sessionUser.email };
       setUserIfChanged(mergedProfile);
@@ -236,6 +252,22 @@ export default function App() {
       if (theme && theme !== themeRef.current) {
         themeRef.current = theme;
         setTheme(theme);
+      }
+
+      // 5) Push subscription: if permission granted, subscribe and store in Supabase
+      if (!pushSubscribedRef.current && Notification.permission === 'granted') {
+        pushSubscribedRef.current = true;
+        try {
+          const vapidKey = (import.meta as any).env?.VITE_VAPID_PUBLIC_KEY || '';
+          if (vapidKey) {
+            await subscribeToPush(vapidKey, async (sub) => {
+              await DataService.upsertPushSubscription({ ...sub, user_id: uid });
+              setPushSubscribed(true);
+            });
+          }
+        } catch {
+          // Non-fatal; will retry on next load
+        }
       }
 
       consecutiveRefreshFailuresRef.current = 0;
@@ -452,6 +484,10 @@ export default function App() {
   // new `user` objects — keying on the object would tear down and re-subscribe
   // the realtime socket after every refresh, dropping events in the gap.
   const realtimeUid = user?.user_id;
+  const remindersRef = useRef(reminders);
+  useEffect(() => {
+    remindersRef.current = reminders;
+  }, [reminders]);
   useEffect(() => {
     if (!realtimeUid || !supabase) return;
     const uid = realtimeUid;
@@ -485,6 +521,28 @@ export default function App() {
           { event: '*', schema: 'public', table: 'progress_tasks', filter: `user_id=eq.${uid}` },
           handleTaskChange
         )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'task_reminders', filter: `user_id=eq.${uid}` },
+          (payload: any) => {
+            const { eventType, new: newRow, old } = payload;
+            if (eventType === 'DELETE') {
+              const id = old?.id;
+              if (!id) return;
+              setReminders((prev) => prev.filter((r) => r.id !== id));
+              return;
+            }
+            const row = newRow as TaskReminder;
+            if (!row?.id) return;
+            setReminders((prev) => {
+              const idx = prev.findIndex((r) => r.id === row.id);
+              if (idx === -1) return [row, ...prev];
+              const copy = [...prev];
+              copy[idx] = { ...copy[idx], ...row };
+              return copy;
+            });
+          }
+        )
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
             attempt = 0; // healthy — reset backoff
@@ -514,6 +572,25 @@ export default function App() {
     window.addEventListener('tudu-update-ready', onUpdateReady);
     return () => window.removeEventListener('tudu-update-ready', onUpdateReady);
   }, []);
+
+  // ---------------- Service Worker message handler (deep-link from push) ----------------
+  useEffect(() => {
+    const handleSWMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'TUDU_OPEN_TASK') {
+        const { taskId, projectId } = event.data;
+        if (projectId) {
+          // Find project and navigate
+          const proj = projects.find((p) => p.id === projectId);
+          if (proj) {
+            setSelectedProject(proj);
+          }
+        }
+        // If taskId but no projectId, we could search tasks — for now just project navigation
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleSWMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', handleSWMessage);
+  }, [projects]);
 
   const applyAppUpdate = () => {
     if (applyingUpdateRef.current) return;
@@ -618,6 +695,8 @@ export default function App() {
         setTasks((prev) => prev.filter((t) => t.project_id !== projectId));
         setSelectedProject(null);
         await DataService.deleteProject(projectId);
+        // Cancel reminders for deleted project
+        await DataService.cancelRemindersForProject(projectId);
         addToast('success', 'Progress deleted', target ? `"${target.title}" and its tasks were removed.` : undefined);
       } catch (err: any) {
         // Rollback: restore from snapshot of refs at failure time via silent refresh
@@ -727,6 +806,15 @@ export default function App() {
       setTasks(finalTasks);
       recomputeProjectStats(taskData.project_id, finalTasks);
 
+      // Create reminder for the task's due_datetime if set
+      if (newTask.due_datetime) {
+        try {
+          await DataService.createReminder(newTask.id, newTask.due_datetime);
+        } catch (err) {
+          console.warn('[TU DU] Failed to create reminder:', err);
+        }
+      }
+
       // Jump into that Progress Detail workspace WITHOUT clobbering freshly
       // recomputed stats (previous code spread a pre-mutation snapshot here).
       setSelectedProject((prev) =>
@@ -767,6 +855,10 @@ export default function App() {
       setPendingTaskIds((prev) => new Set(prev).add(taskId));
       try {
         await DataService.toggleTaskCompletion(taskId, isCompleted);
+        // Cancel reminders when task is completed; recreate if uncompleted (not needed typically)
+        if (isCompleted) {
+          await DataService.cancelRemindersForTask(taskId);
+        }
         if (import.meta.env.DEV) {
           console.info(`[perf] toggleComplete confirmed in ${(performance.now() - t0).toFixed(0)}ms`);
         }
@@ -848,6 +940,8 @@ export default function App() {
     if (!editingTask) return;
     const oldImage = editingTask.image_url || '';
     const oldProjectId = editingTask.project_id;
+    const oldDueDatetime = editingTask.due_datetime ?? null;
+    const newDueDatetime = updates.due_datetime ?? null;
 
     // Optimistic apply + stats for BOTH projects when moved
     const applyEdit = (source: ProgressTask[]) =>
@@ -872,6 +966,18 @@ export default function App() {
       return;
     }
 
+    // Handle reminder changes: if due_datetime changed, cancel old and create new
+    if (oldDueDatetime !== newDueDatetime) {
+      try {
+        await DataService.cancelRemindersForTask(editingTask.id);
+        if (newDueDatetime) {
+          await DataService.createReminder(editingTask.id, newDueDatetime);
+        }
+      } catch (err) {
+        console.warn('[TU DU] Failed to update reminders:', err);
+      }
+    }
+
     if (oldImage && oldImage !== updates.image_url && isSupabaseStorageUrl(oldImage)) {
       deleteStorageFileFromUrl(oldImage);
     }
@@ -888,6 +994,8 @@ export default function App() {
       recomputeProjectStats(target.project_id, nextTasks);
       try {
         await DataService.deleteTask(taskId);
+        // Cancel reminders for deleted task
+        await DataService.cancelRemindersForTask(taskId);
         addToast('success', 'Task deleted');
       } catch {
         console.error('Task delete failed');
@@ -1192,6 +1300,13 @@ export default function App() {
           userId={userId}
           onClose={() => setEditingTask(null)}
           onSave={handleSaveTaskEdit}
+          reminders={reminders.filter((r) => r.task_id === editingTask.id)}
+          onAddReminder={async (taskId, remindAt) => {
+            await DataService.createReminder(taskId, remindAt);
+          }}
+          onDeleteReminder={async (reminderId) => {
+            await DataService.deleteReminder(reminderId);
+          }}
         />
       )}
 

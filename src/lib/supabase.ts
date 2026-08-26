@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { ProgressProject, ProgressTask, UserProfile, ThemeMode } from '../types';
+import { ProgressProject, ProgressTask, UserProfile, ThemeMode, TaskReminder, PushSubscription } from '../types';
 import { recordServerTimeSample } from './timeUtils';
 
 // Detect Supabase env credentials (client-safe anon key only)
@@ -546,6 +546,124 @@ export class DataService {
       .update({ is_completed: false, completed_at: null })
       .eq('project_id', projectId)
       .eq('user_id', userId);
+    if (error) throw error;
+  }
+
+  // --- REMINDERS ---
+
+  static async getTaskReminders(taskId: string): Promise<TaskReminder[]> {
+    const client = requireClient();
+    const { data, error } = await client
+      .from('task_reminders')
+      .select('*')
+      .eq('task_id', taskId)
+      .order('remind_at', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  static async getAllUserReminders(userId: string): Promise<TaskReminder[]> {
+    const client = requireClient();
+    const { data, error } = await client
+      .from('task_reminders')
+      .select('*')
+      .eq('user_id', userId)
+      .order('remind_at', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  static async createReminder(taskId: string, remindAt: string): Promise<TaskReminder> {
+    const client = requireClient();
+    const { data, error } = await client.rpc('create_reminder_for_task', {
+      p_task_id: taskId,
+      p_remind_at: remindAt,
+    });
+    if (error) throw error;
+    // rpc returns the reminder id; fetch the full row
+    const { data: reminder, error: fetchError } = await client
+      .from('task_reminders')
+      .select('*')
+      .eq('id', data)
+      .single();
+    if (fetchError) throw fetchError;
+    return reminder;
+  }
+
+  static async createRemindersForTask(taskId: string, remindAtTimes: string[]): Promise<TaskReminder[]> {
+    const results: TaskReminder[] = [];
+    for (const remindAt of remindAtTimes) {
+      const reminder = await this.createReminder(taskId, remindAt);
+      results.push(reminder);
+    }
+    return results;
+  }
+
+  static async updateReminder(reminderId: string, updates: Partial<TaskReminder>): Promise<void> {
+    const client = requireClient();
+    const { error } = await client
+      .from('task_reminders')
+      .update(updates)
+      .eq('id', reminderId);
+    if (error) throw error;
+  }
+
+  static async deleteReminder(reminderId: string): Promise<void> {
+    const client = requireClient();
+    const { error } = await client.from('task_reminders').delete().eq('id', reminderId);
+    if (error) throw error;
+  }
+
+  static async cancelRemindersForTask(taskId: string): Promise<void> {
+    const client = requireClient();
+    const { error } = await client.rpc('cancel_reminders_for_task', { p_task_id: taskId });
+    if (error) throw error;
+  }
+
+  static async cancelRemindersForProject(projectId: string): Promise<void> {
+    const client = requireClient();
+    const { error } = await client.rpc('cancel_reminders_for_project', { p_project_id: projectId });
+    if (error) throw error;
+  }
+
+  // --- PUSH SUBSCRIPTIONS ---
+
+  static async getPushSubscriptions(userId: string): Promise<PushSubscription[]> {
+    const client = requireClient();
+    const { data, error } = await client
+      .from('push_subscriptions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  }
+
+  static async upsertPushSubscription(
+    subscription: Omit<PushSubscription, 'id' | 'created_at' | 'updated_at'>
+  ): Promise<PushSubscription> {
+    const client = requireClient();
+    const { data, error } = await client
+      .from('push_subscriptions')
+      .upsert(subscription, { onConflict: 'endpoint' })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  static async deletePushSubscription(endpoint: string): Promise<void> {
+    const client = requireClient();
+    const { error } = await client.from('push_subscriptions').delete().eq('endpoint', endpoint);
+    if (error) throw error;
+  }
+
+  static async updatePushSubscriptionLastUsed(endpoint: string): Promise<void> {
+    const client = requireClient();
+    const { error } = await client
+      .from('push_subscriptions')
+      .update({ last_used_at: new Date().toISOString() })
+      .eq('endpoint', endpoint);
     if (error) throw error;
   }
 
